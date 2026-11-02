@@ -38,7 +38,6 @@ export async function GET(req: Request) {
                         text: true,
                         pinyin: true,
                         meaning: true,
-                        poolId: true,
                     },
                 },
             },

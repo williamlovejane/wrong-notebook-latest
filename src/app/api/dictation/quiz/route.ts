@@ -3,11 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { generateWordCandidates, WordGenError } from "@/lib/ai/word-gen";
 import { findTextbookCandidates, type WordCandidate } from "@/lib/dictation/word-source";
-import { lookupCharSemester } from "@/lib/yuwen/db";
+import { isTextbookAvailable, currentSemesterFromProfile, learnedCharSets, lookupCharSemester } from "@/lib/yuwen/db";
 import {
     maskWord,
     validateWord,
-    poolCharSet,
     splitPinyin,
 } from "@/lib/dictation/pool";
 import type { QuizPrompt } from "@/lib/dictation/types";
@@ -33,9 +32,7 @@ export async function POST(req: Request) {
         const card = await prisma.reviewCard.findUnique({
             where: { id: cardId },
             include: {
-                entry: {
-                    include: { pool: true },
-                },
+                entry: true,
             },
         });
 
@@ -46,8 +43,14 @@ export async function POST(req: Request) {
         let promptWord: string;
 
         if (entry.kind === "chinese_char") {
-            const poolChars = entry.pool?.chars ?? "";
-            const poolSet = poolCharSet(poolChars);
+            // 学过的字直接由课本权威库推导：截至"注册信息推算出的当前学期"
+            const textbookOk = isTextbookAvailable();
+            const cur = currentSemesterFromProfile(
+                user.educationStage,
+                user.enrollmentYear
+            );
+            const learned = learnedCharSets(cur.grade, cur.semester);
+            const hasLearned = textbookOk && learned.all.size > 0;
 
             // 1) 优先用缓存词；若缓存词已不符合当前字库则丢弃
             let chosen: {
@@ -62,7 +65,7 @@ export async function POST(req: Request) {
             });
 
             for (const c of cached) {
-                if (!poolChars || !validateWord(c.word, entry.text, poolSet).ok) {
+                if (!hasLearned || !validateWord(c.word, entry.text, learned.all).ok) {
                     await prisma.dictationWord.delete({ where: { id: c.id } }).catch(() => {});
                     continue;
                 }
@@ -81,9 +84,9 @@ export async function POST(req: Request) {
 
             // 2) 缓存没有 → 课内组词链：教材词语表 → 课内字组合（jieba 词表验证）
             let fallbackHint: string | undefined;
-            if (!chosen && poolChars) {
+            if (!chosen && hasLearned) {
                 try {
-                    const candidates = findTextbookCandidates(entry.text, poolChars);
+                    const candidates = findTextbookCandidates(entry.text, learned);
                     for (const cand of candidates) {
                         await prisma.dictationWord
                             .create({
@@ -125,18 +128,20 @@ export async function POST(req: Request) {
 
             // 3) 课内链也没找到 → AI 现场组词
             if (!chosen) {
-                if (!poolChars) {
-                    fallbackHint = "未绑定备选字库或字库为空，已降级为单字考察";
+                if (!hasLearned) {
+                    fallbackHint = textbookOk
+                        ? "课本字词库中无可用生字，已降级为单字考察"
+                        : "课内字词库不可用，已降级为单字考察";
                 } else {
                     try {
                         const targetSemester = lookupCharSemester(entry.text);
                         const candidates = await generateWordCandidates({
                             target: entry.text,
-                            poolChars,
+                            poolChars: learned.poolString,
                             count: 6,
                             gradeSemester: targetSemester
                                 ? `${targetSemester.grade}年级${targetSemester.semester}册`
-                                : null,
+                                : `${cur.grade}年级${cur.semester}册`,
                         });
 
                         for (const cand of candidates) {

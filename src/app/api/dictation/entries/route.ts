@@ -49,7 +49,6 @@ export async function GET(req: Request) {
             orderBy: { createdAt: "desc" },
             include: {
                 card: true,
-                pool: { select: { id: true, name: true } },
                 _count: { select: { words: true } },
             },
         });
@@ -62,8 +61,6 @@ export async function GET(req: Request) {
                 pinyin: e.pinyin,
                 meaning: e.meaning,
                 note: e.note,
-                poolId: e.poolId,
-                poolName: e.pool?.name ?? null,
                 wordCount: e._count.words,
                 card: e.card
                     ? {
@@ -103,16 +100,6 @@ export async function POST(req: Request) {
 
         if (rawItems.length === 0) return badRequest("没有要录入的内容");
         if (rawItems.length > 200) return badRequest("单次最多录入 200 条");
-
-        let poolId: string | null = typeof body?.poolId === "string" ? body.poolId : null;
-
-        if (kind === "chinese_char") {
-            if (!poolId) return badRequest("语文生字必须指定备选字库");
-            const pool = await prisma.charPool.findUnique({ where: { id: poolId } });
-            if (!pool || pool.userId !== user.id) return badRequest("字库不存在");
-        } else {
-            poolId = null;
-        }
 
         const created: string[] = [];
         const skipped: { text: string; reason: string }[] = [];
@@ -161,7 +148,6 @@ export async function POST(req: Request) {
                     pinyin: autoPinyin,
                     meaning: item.meaning?.trim() || null,
                     note: autoNote,
-                    poolId,
                     card: {
                         create: {
                             userId: user.id,

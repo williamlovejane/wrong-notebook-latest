@@ -12,11 +12,10 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import { currentSemesterFromProfile, type SemesterRef } from "./semester";
 
-export interface SemesterRef {
-    grade: number;
-    semester: "上" | "下";
-}
+export { currentSemesterFromProfile };
+export type { SemesterRef };
 
 export interface TextbookChar {
     char: string;
@@ -202,6 +201,49 @@ export function learnedChars(maxGrade: number, maxSemester: "上" | "下"): {
     } catch {
         return { xiezi: [], shizi: [] };
     }
+}
+
+export interface LearnedSets {
+    /** 会写的字（写字表），组词搭档优先 */
+    xiezi: Set<string>;
+    /** 会认的字（识字表） */
+    shizi: Set<string>;
+    /** 两者的并集，用于准入校验 */
+    all: Set<string>;
+    /** 拼接成字符串，供 AI 组词 prompt 使用（写字表在前） */
+    poolString: string;
+}
+
+const globalForLearned = global as unknown as {
+    __yuwenLearned?: Map<string, LearnedSets>;
+};
+
+/**
+ * 按学期缓存"学过的字集合"。组词考察高频调用，SQLite 查询结果
+ * 在进程内按 (grade, semester) 缓存；升级课本库或学期变更后
+ * 缓存键不同自然重建。
+ */
+export function learnedCharSets(
+    maxGrade: number,
+    maxSemester: "上" | "下"
+): LearnedSets {
+    const key = `${maxGrade}-${maxSemester}`;
+    if (!globalForLearned.__yuwenLearned) {
+        globalForLearned.__yuwenLearned = new Map();
+    }
+    const cache = globalForLearned.__yuwenLearned;
+    const hit = cache.get(key);
+    if (hit) return hit;
+
+    const { xiezi, shizi } = learnedChars(maxGrade, maxSemester);
+    const sets: LearnedSets = {
+        xiezi: new Set(xiezi),
+        shizi: new Set(shizi),
+        all: new Set([...xiezi, ...shizi]),
+        poolString: [...xiezi, ...shizi].join(""),
+    };
+    cache.set(key, sets);
+    return sets;
 }
 
 /** 查某字在指定学期是否为课内生字（识字/写字），返回所在组信息，用于错字出处标注 */

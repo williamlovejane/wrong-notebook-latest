@@ -27,19 +27,8 @@ export async function PATCH(
             }
         }
 
-        if (typeof body?.poolId === "string" || body?.poolId === null) {
-            if (existing.kind !== "chinese_char") {
-                return badRequest("只有语文生字可以绑定字库");
-            }
-            if (body.poolId) {
-                const pool = await prisma.charPool.findUnique({ where: { id: body.poolId } });
-                if (!pool || pool.userId !== user.id) return badRequest("字库不存在");
-            }
-            data.poolId = body.poolId;
-        }
-
-        // 改了字库或生字，之前缓存的组词可能不再合规，清掉重新生成
-        if (data.poolId !== undefined) {
+        // 改了生字文本，之前缓存的组词可能不再适用，清掉重新生成
+        if (typeof body?.text === "string" && body.text.trim() && body.text.trim() !== existing.text) {
             await prisma.dictationWord.deleteMany({ where: { entryId: id } });
         }
 

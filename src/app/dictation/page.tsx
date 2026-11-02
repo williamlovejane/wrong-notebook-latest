@@ -10,15 +10,14 @@ import { Badge } from "@/components/ui/badge";
 import { BackButton } from "@/components/ui/back-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiClient } from "@/lib/api-client";
-import { Loader2, Plus, Trash2, Play, BookMarked, BookOpen, Volume2, Languages } from "lucide-react";
+import { currentSemesterFromProfile } from "@/lib/yuwen/semester";
+import { Loader2, Plus, Trash2, Play, BookOpen, Volume2, Languages } from "lucide-react";
 
 type Kind = "chinese_char" | "english_word" | "english_sentence";
 
-interface Pool {
-    id: string;
-    name: string;
-    charCount: number;
-    isDefault: boolean;
+interface UserProfile {
+    educationStage?: string | null;
+    enrollmentYear?: number | null;
 }
 
 interface Entry {
@@ -108,12 +107,12 @@ function parseItems(kind: Kind, raw: string): { text: string; pinyin?: string; m
 
 export default function DictationPage() {
     const router = useRouter();
-    const [pools, setPools] = useState<Pool[]>([]);
     const [today, setToday] = useState<TodayResponse | null>(null);
     const [entries, setEntries] = useState<Entry[]>([]);
     const [activeKind, setActiveKind] = useState<Kind>("chinese_char");
     const [rawInput, setRawInput] = useState("");
-    const [poolId, setPoolId] = useState<string>("");
+    // 当前学期由注册信息（学段+入学年份）推算，仅用于展示；组词在后端推导
+    const [semLabel, setSemLabel] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
@@ -122,17 +121,24 @@ export default function DictationPage() {
     const loadAll = useCallback(async () => {
         setLoading(true);
         try {
-            const [poolRes, todayRes, entryRes] = await Promise.all([
-                apiClient.get<{ pools: Pool[] }>("/api/dictation/pools"),
+            const [todayRes, entryRes, profile] = await Promise.all([
                 apiClient.get<TodayResponse>("/api/dictation/today"),
                 apiClient.get<{ entries: Entry[] }>("/api/dictation/entries"),
+                apiClient
+                    .get<UserProfile>("/api/user")
+                    .catch(() => ({ educationStage: undefined, enrollmentYear: undefined })),
             ]);
-            setPools(poolRes.pools);
             setToday(todayRes);
             setEntries(entryRes.entries);
-
-            const def = poolRes.pools.find((p) => p.isDefault) ?? poolRes.pools[0];
-            setPoolId((prev) => prev || def?.id || "");
+            const cur = currentSemesterFromProfile(
+                profile.educationStage ?? null,
+                profile.enrollmentYear ?? null
+            );
+            setSemLabel(
+                cur.grade >= 9
+                    ? null
+                    : `${cur.grade}年级${cur.semester}学期`
+            );
             setError(null);
         } catch (e) {
             setError(e instanceof Error ? e.message : "加载失败");
@@ -151,10 +157,6 @@ export default function DictationPage() {
             setError("没有可录入的内容");
             return;
         }
-        if (activeKind === "chinese_char" && !poolId) {
-            setError("请先在「备选字库」里建一个字库，生字必须绑定字库才能组词考察");
-            return;
-        }
 
         setSaving(true);
         setError(null);
@@ -167,7 +169,6 @@ export default function DictationPage() {
             }>("/api/dictation/entries", {
                 kind: activeKind,
                 items,
-                poolId: activeKind === "chinese_char" ? poolId : undefined,
             });
 
             let msg = `成功录入 ${res.createdCount} 条`;
@@ -213,11 +214,6 @@ export default function DictationPage() {
                 <Link href="/yuwen">
                     <Button variant="outline" size="sm">
                         <BookOpen className="mr-2 h-4 w-4" /> 课内字词
-                    </Button>
-                </Link>
-                <Link href="/dictation/pools">
-                    <Button variant="outline" size="sm">
-                        <BookMarked className="mr-2 h-4 w-4" /> 备选字库
                     </Button>
                 </Link>
             </div>
@@ -289,26 +285,12 @@ export default function DictationPage() {
                             <CardContent className="space-y-3">
                                 <p className="text-xs text-muted-foreground">{tab.hint}</p>
 
-                                {tab.key === "chinese_char" && (
+                                {tab.key === "chinese_char" && semLabel && (
                                     <div className="flex flex-wrap items-center gap-2">
-                                        <span className="text-sm">备选字库</span>
-                                        <select
-                                            className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                                            value={poolId}
-                                            onChange={(e) => setPoolId(e.target.value)}
-                                        >
-                                            <option value="">（未选择）</option>
-                                            {pools.map((p) => (
-                                                <option key={p.id} value={p.id}>
-                                                    {p.name}（{p.charCount} 字）
-                                                </option>
-                                            ))}
-                                        </select>
-                                        {pools.length === 0 && (
-                                            <Link href="/dictation/pools" className="text-sm underline">
-                                                去创建字库
-                                            </Link>
-                                        )}
+                                        <span className="text-xs text-muted-foreground">
+                                            组词范围：{semLabel}及以前课本学过的字
+                                            （按注册信息推算，可在「设置」里调整学段/入学年份）
+                                        </span>
                                     </div>
                                 )}
 
@@ -352,11 +334,6 @@ export default function DictationPage() {
                                                 <span className="text-sm text-muted-foreground">
                                                     {entry.pinyin || entry.meaning || ""}
                                                 </span>
-                                                {entry.poolName && (
-                                                    <Badge variant="outline" className="text-xs">
-                                                        {entry.poolName}
-                                                    </Badge>
-                                                )}
                                                 <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
                                                     {entry.card && (
                                                         <>

@@ -20,7 +20,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   educationStage String? // primary, junior_high, senior_high, university
-  enrollmentYear Int?
+  enrollmentYear Int? // 入学年份；小学阶段由此推算当前年级学期（组词考察范围）
 
   role      String   @default("user") // "admin" or "user"
   isActive  Boolean  @default(true)   // 用户是否启用
@@ -30,7 +30,6 @@ model User {
   practiceRecords PracticeRecord[]
   customTags KnowledgeTag[] // User's custom tags
 
-  charPools        CharPool[]
   dictationEntries DictationEntry[]
   reviewCards      ReviewCard[]
 }
@@ -148,25 +147,6 @@ model PracticeRecord {
 // 默写复习（生字 / 英语单词 / 英语句子）
 // ============================================================
 
-// 备选字库：学生已认识的字集合，AI 组词时必须只用这些字 + 待考生字
-model CharPool {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  name      String
-  chars     String   @default("") // 已去重的字符串，如 "天地人你我他"
-  isDefault Boolean  @default(false)
-
-  entries   DictationEntry[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([userId, name])
-  @@index([userId])
-}
-
 // 待复习词条：语文生字 / 英语单词 / 英语句子
 model DictationEntry {
   id        String   @id @default(cuid())
@@ -179,9 +159,6 @@ model DictationEntry {
   meaning   String?  // 英语释义 / 语文注释
   note      String?  // 备注（课文出处等）
 
-  poolId    String?
-  pool      CharPool? @relation(fields: [poolId], references: [id], onDelete: SetNull)
-
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -190,7 +167,6 @@ model DictationEntry {
 
   @@unique([userId, kind, text])
   @@index([userId, kind])
-  @@index([poolId])
 }
 
 // AI 组词缓存：避免每次考察都调用模型

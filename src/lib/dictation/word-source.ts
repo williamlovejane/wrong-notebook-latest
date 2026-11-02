@@ -8,21 +8,19 @@
  *      组合必须能在 jieba 词表中找到，避免组出假词
  *   4. AI 生成（quiz route 的现有兜底）
  *
- * 所有候选都经过 validateWord 校验：词语中除目标字外，
- * 每个字都必须在备选字库（学生已认识的字）里。
+ * "学过的字"不再来自手工维护的备选字库，而是直接由课本权威库
+ * （textbook.sqlite）按孩子当前学期推导：截至该学期的全部
+ * 写字表黑字 + 识字表黑字。所有候选都经过 validateWord 校验：
+ * 词语中除目标字外，每个字都必须是学过的字。
  */
 
 import { pinyin } from "pinyin-pro";
-import {
-    validateWord,
-    poolCharSet,
-    type WordValidation,
-} from "./pool";
+import { validateWord, type WordValidation } from "./pool";
 import {
     findWordsInCiyu,
     findWordsInDict,
-    learnedChars,
     lookupCharSemester,
+    type LearnedSets,
 } from "@/lib/yuwen/db";
 
 export interface WordCandidate {
@@ -57,16 +55,15 @@ function toCandidate(
 }
 
 /**
- * 教材词语表匹配：词含目标字、其余字都在备选字库。
+ * 教材词语表匹配：词含目标字、其余字都是学过的字。
  * 同学期内按词语表原顺序（教材编排即难度序）。
  */
 export function findCiyuCandidates(
     target: string,
-    poolChars: string,
+    learned: LearnedSets,
     targetSemester?: { grade: number; semester: "上" | "下" } | null
 ): WordCandidate[] {
-    const pool = poolCharSet(poolChars);
-    if (pool.size === 0) return [];
+    if (learned.all.size === 0) return [];
 
     const hits = findWordsInCiyu(target, 24);
     const out: WordCandidate[] = [];
@@ -84,7 +81,7 @@ export function findCiyuCandidates(
     const scored = hits
         .map((h) => ({
             hit: h,
-            v: validateWord(h.word, target, pool),
+            v: validateWord(h.word, target, learned.all),
             r: rank(h.grade, h.semester),
         }))
         .filter((x) => x.hit.word !== target && x.v.ok)
@@ -109,32 +106,28 @@ export function findCiyuCandidates(
  */
 export function findComposedCandidates(
     target: string,
-    poolChars: string,
+    learned: LearnedSets,
     targetSemester?: { grade: number; semester: "上" | "下" } | null
 ): WordCandidate[] {
-    const pool = poolCharSet(poolChars);
-    if (pool.size === 0) return [];
+    if (learned.all.size === 0) return [];
 
     const sem = targetSemester || lookupCharSemester(target);
     if (!sem) return [];
-    const { xiezi, shizi } = learnedChars(sem.grade, sem.semester);
-    const xieziSet = new Set(xiezi);
-    const shiziSet = new Set(shizi);
 
     const dictWords = findWordsInDict(target, 80);
     const out: WordCandidate[] = [];
 
     for (const word of dictWords) {
         if (word === target) continue;
-        const v = validateWord(word, target, pool);
+        const v = validateWord(word, target, learned.all);
         if (!v.ok) continue;
 
         // 分类搭档字来源：全在写字表 → xiezi；否则全在识字表 → shizi
         const others = Array.from(word).filter(
             (_, i) => i < v.maskedAt || i >= v.maskedAt + Array.from(target).length
         );
-        const inXiezi = others.every((c) => xieziSet.has(c));
-        const inShizi = others.every((c) => shiziSet.has(c));
+        const inXiezi = others.every((c) => learned.xiezi.has(c));
+        const inShizi = others.every((c) => learned.shizi.has(c));
         if (!inXiezi && !inShizi) continue;
 
         const cand = toCandidate(
@@ -154,10 +147,10 @@ export function findComposedCandidates(
  */
 export function findTextbookCandidates(
     target: string,
-    poolChars: string
+    learned: LearnedSets
 ): WordCandidate[] {
     const sem = lookupCharSemester(target);
-    const ciyu = findCiyuCandidates(target, poolChars, sem);
+    const ciyu = findCiyuCandidates(target, learned, sem);
     if (ciyu.length > 0) return ciyu;
-    return findComposedCandidates(target, poolChars, sem);
+    return findComposedCandidates(target, learned, sem);
 }
