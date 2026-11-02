@@ -1,0 +1,256 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  educationStage String? // primary, junior_high, senior_high, university
+  enrollmentYear Int?
+
+  role      String   @default("user") // "admin" or "user"
+  isActive  Boolean  @default(true)   // 用户是否启用
+
+  errorItems ErrorItem[]
+  subjects   Subject[]
+  practiceRecords PracticeRecord[]
+  customTags KnowledgeTag[] // User's custom tags
+
+  charPools        CharPool[]
+  dictationEntries DictationEntry[]
+  reviewCards      ReviewCard[]
+}
+
+// 统一知识点标签表 (支持无限层级)
+model KnowledgeTag {
+  id        String   @id @default(cuid())
+  name      String   // 标签名，如 "勾股定理"
+  subject   String   // 学科，如 "math", "english"
+
+  // 层级控制 (邻接表模式)
+  parentId  String?
+  parent    KnowledgeTag?  @relation("TagHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children  KnowledgeTag[] @relation("TagHierarchy")
+
+  // 排序与编码
+  order     Int      @default(0) // 用于保持教材顺序
+  code      String?              // 如 "1.2.1"
+
+  // 区分系统预设 vs 用户自定义
+  isSystem  Boolean  @default(false)
+  userId    String?  // 如果是用户自定义标签，绑定 userId
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // 与错题的多对多关系
+  errorItems ErrorItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 联合索引：确保同一用户（或系统）下同一父节点下的标签名不重复
+  @@unique([subject, name, userId, parentId])
+  // 索引：加速父子查询
+  @@index([parentId])
+  @@index([subject])
+}
+
+model Subject {
+  id     String @id @default(cuid())
+  name   String
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  errorItems ErrorItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([name, userId])
+}
+
+model ErrorItem {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subjectId      String?
+  subject        Subject? @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  
+  originalImageUrl String
+  ocrText          String?
+  
+  // AI Analysis
+  questionText     String? // Parsed question
+  answerText       String? // AI provided answer
+  analysis         String? // AI analysis/explanation
+  wrongAnswerText  String? // Student's wrong answer/work if visible
+  mistakeAnalysis  String? // Analysis of why the wrong answer happened
+  mistakeStatus    String? // not_attempted, wrong_attempt, unknown
+  knowledgePoints  String? // [DEPRECATED] JSON string - kept for migration only
+  geogebraCommands String? // GeoGebra commands for interactive demo (JSON or newline-separated)
+
+  // New: many-to-many relation with KnowledgeTag
+  tags             KnowledgeTag[]
+  
+  // User Metadata
+  source           String? // e.g. "Midterm Exam"
+  errorType        String? // e.g. "Calculation", "Concept"
+  userNotes        String?
+  
+  masteryLevel     Int     @default(0) // 0: New, 1: Reviewing, 2: Mastered
+  gradeSemester    String? // e.g. "Junior High Grade 2, 1st Semester"
+  paperLevel       String? // e.g. "A", "B", "Other"
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  reviewSchedules ReviewSchedule[]
+}
+
+model ReviewSchedule {
+  id          String    @id @default(cuid())
+  errorItemId String
+  errorItem   ErrorItem @relation(fields: [errorItemId], references: [id], onDelete: Cascade)
+  
+  scheduledFor DateTime
+  completedAt  DateTime?
+  isCorrect    Boolean? // Result of the review
+  
+  createdAt    DateTime @default(now())
+}
+
+model PracticeRecord {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  subject   String?  // e.g. "Math", "Physics"
+  difficulty String? // "easy", "medium", "hard", "harder"
+  isCorrect Boolean?
+  
+  createdAt DateTime @default(now())
+}
+
+// ============================================================
+// 默写复习（生字 / 英语单词 / 英语句子）
+// ============================================================
+
+// 备选字库：学生已认识的字集合，AI 组词时必须只用这些字 + 待考生字
+model CharPool {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name      String
+  chars     String   @default("") // 已去重的字符串，如 "天地人你我他"
+  isDefault Boolean  @default(false)
+
+  entries   DictationEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+// 待复习词条：语文生字 / 英语单词 / 英语句子
+model DictationEntry {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  kind      String   // "chinese_char" | "english_word" | "english_sentence"
+  text      String   // 生字 / 单词 / 句子
+  pinyin    String?  // 语文读音；英语可选音标
+  meaning   String?  // 英语释义 / 语文注释
+  note      String?  // 备注（课文出处等）
+
+  poolId    String?
+  pool      CharPool? @relation(fields: [poolId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  card      ReviewCard?
+  words     DictationWord[]
+
+  @@unique([userId, kind, text])
+  @@index([userId, kind])
+  @@index([poolId])
+}
+
+// AI 组词缓存：避免每次考察都调用模型
+model DictationWord {
+  id        String   @id @default(cuid())
+  entryId   String
+  entry     DictationEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  word      String   // 完整词语，如 "花园"
+  pinyin    String?  // 词语拼音，如 "huā yuán"
+  maskedAt  Int      @default(0) // 被遮蔽字符的下标（0 起）
+  source    String   @default("ai") // ai | manual | ciyu | xiezi | shizi
+  sourceLabel String? // 考察时展示的出处，如 "二上·词语表" / "AI生成"
+  usedCount Int      @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([entryId, word])
+  @@index([entryId])
+}
+
+// 遗忘曲线复习卡：每个词条一张
+model ReviewCard {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  entryId   String   @unique
+  entry     DictationEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  stage     Int      @default(0) // 0..5 对应 1/2/4/7/15/30 天
+  status    String   @default("active") // active | mastered | suspended
+  dueAt     DateTime
+
+  correctCount   Int      @default(0)
+  wrongCount     Int      @default(0)
+  lastReviewedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  logs      ReviewLog[]
+
+  @@index([userId, status, dueAt])
+  @@index([entryId])
+}
+
+// 复习日志：每次判分留痕，用于统计与调试
+model ReviewLog {
+  id         String   @id @default(cuid())
+  cardId     String
+  card       ReviewCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  reviewedAt DateTime @default(now())
+  result     String   // correct | wrong
+  stageBefore Int
+  stageAfter  Int
+
+  promptWord String?  // 本次考察用的词（语文）或句子
+  answerText String?  // 用户作答
+
+  @@index([cardId, reviewedAt])
+}

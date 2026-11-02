@@ -1,0 +1,17 @@
+services:
+  wrong-notebook:
+    image: wrong-notebook:local
+    build: .
+    container_name: wrong-notebook
+    restart: unless-stopped
+    ports:
+      # Host port 3000 is taken by magic_journal_app, use 3001
+      # Bind to loopback only (not exposed to LAN); tailscale serve exposes it to the tailnet
+      - "127.0.0.1:3001:3000"
+    environment:
+      - NEXTAUTH_SECRET=9S51ZXh8Fjculx81QeEvDCVGkqTOp9K0jMgBnVcnc7w=
+      # AI_PROVIDER / API keys can be configured in the web UI (Settings), no restart needed
+    volumes:
+      # Persist the SQLite database
+      - ./data:/app/data
+      - ./config:/app/config
