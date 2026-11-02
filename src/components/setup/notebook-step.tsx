@@ -6,7 +6,7 @@ import { CreateNotebookDialog } from "@/components/create-notebook-dialog";
 import type { CreateNotebookInput } from "@/components/create-notebook-dialog";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, ApiError } from "@/lib/api-client";
 import { getApiErrorMessage } from "@/lib/error-message";
 import { toast } from "@/lib/feedback";
 import { frontendLogger } from "@/lib/frontend-logger";
@@ -22,6 +22,12 @@ export function NotebookStep() {
             await apiClient.post("/api/notebooks", input);
             setCreatedNames((prev) => [...prev, input.name]);
         } catch (error) {
+            // 同名笔记本已存在（409）：向导场景视为幂等成功，不再挡流程
+            if (error instanceof ApiError && error.status === 409) {
+                setCreatedNames((prev) => (prev.includes(input.name) ? prev : [...prev, input.name]));
+                toast.info(t.setup.notebook.exists.replace("{name}", input.name));
+                return;
+            }
             frontendLogger.error('[Setup]', 'Failed to create notebook', { error });
             toast.error(getApiErrorMessage(error) || t.notebooks?.createError || "Failed to create");
             throw error;

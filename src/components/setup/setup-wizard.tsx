@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -24,7 +24,7 @@ interface SetupWizardProps {
 /** 安装向导：修改默认密码 → 配置 AI 渠道 → 创建第一个错题本 */
 export function SetupWizard({ mustChangePassword, setupCompleted }: SetupWizardProps) {
     const { t } = useLanguage();
-    const router = useRouter();
+
     // 步骤在进入时确定，改完密码后会话变化也不再增减
     const [steps] = useState<SetupStep[]>(() => {
         if (mustChangePassword && setupCompleted) return ["password"];
@@ -40,7 +40,9 @@ export function SetupWizard({ mustChangePassword, setupCompleted }: SetupWizardP
         try {
             await apiClient.post("/api/setup", {});
             toast.success(t.setup.finished);
-            router.replace("/");
+            // 向导收尾用硬导航：router.replace 是软跳转，在 iOS Chrome 上
+            // 偶发不生效，表现为「完成」按钮一直转圈（接口已成功）
+            window.location.assign("/");
         } catch (error) {
             frontendLogger.error('[Setup]', 'Failed to complete setup', { error });
             toast.error(t.setup.completeFailed);
