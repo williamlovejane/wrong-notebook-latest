@@ -10,9 +10,11 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { TagInput } from "@/components/tag-input";
 import { NotebookSelector } from "@/components/notebook-selector";
+import { PaperGroupSelect } from "@/components/paper-group-select";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { inferSubjectFromName } from "@/lib/knowledge-tags";
 import type { MistakeStatus } from "@/lib/mistake-status";
+import { toast } from "@/lib/feedback";
 
 interface DirectTextEditorProps {
     onSubmit: (data: {
@@ -45,12 +47,12 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
     const [knowledgePoints, setKnowledgePoints] = useState<string[]>([]);
     const [subjectId, setSubjectId] = useState(defaultNotebookId || "");
     const [gradeSemester, setGradeSemester] = useState("");
-    const [paperLevel, setPaperLevel] = useState("a");
+    const [paperLevel, setPaperLevel] = useState("");
 
     const handleSubmit = async () => {
         if (!questionText.trim()) return;
         if (!subjectId) {
-            alert(t.editor.messages?.selectNotebook || "请选择错题本");
+            toast.warning(t.editor.messages?.selectNotebook || "Please select a notebook");
             return;
         }
 
@@ -64,7 +66,7 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
             knowledgePoints,
             subjectId,
             gradeSemester: gradeSemester || undefined,
-            paperLevel,
+            paperLevel: paperLevel || undefined,
         });
     };
 
@@ -77,7 +79,7 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
         setMistakeStatus("unknown");
         setKnowledgePoints([]);
         setGradeSemester("");
-        setPaperLevel("a");
+        setPaperLevel("");
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -92,56 +94,56 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
     const fields = [
         {
             key: "question",
-            label: t.editor?.question || "题目内容",
+            label: t.editor?.question || "Question Text",
             value: questionText,
             setter: setQuestionText,
-            placeholder: "输入题目内容...\n支持 Markdown 和 LaTeX 公式\n\n示例：\n# 题目一\n\n已知 $f(x) = x^2 + 2x + 1$，求 $f(3)$ 的值。\n\n**解题要求：**\n1. 写出解题步骤\n2. 给出最终答案",
+            placeholder: t.directEntry.questionPlaceholder,
             minHeight: "min-h-[180px]",
             required: true,
         },
         {
             key: "answer",
-            label: t.editor?.answer || "参考答案",
+            label: t.editor?.answer || "Answer",
             value: answerText,
             setter: setAnswerText,
-            placeholder: "输入参考答案...\n\n示例：\n$f(3) = 3^2 + 2 \\times 3 + 1 = 9 + 6 + 1 = 16$",
+            placeholder: t.directEntry.answerPlaceholder,
             minHeight: "min-h-[120px]",
         },
         {
             key: "analysis",
-            label: t.editor?.analysis || "解题分析",
+            label: t.editor?.analysis || "Analysis / Explanation",
             value: analysis,
             setter: setAnalysis,
-            placeholder: "输入解题分析...\n\n示例：\n这是一个**一元二次函数**求值问题。\n\n将 $x=3$ 代入函数表达式：\n$$f(3) = 3^2 + 2 \\times 3 + 1 = 16$$",
+            placeholder: t.directEntry.analysisPlaceholder,
             minHeight: "min-h-[150px]",
         },
         {
             key: "wrongAnswer",
-            label: t.editor?.wrongAnswerText || "错误解答原文",
+            label: t.editor?.wrongAnswerText || "Wrong Answer / Work",
             value: wrongAnswerText,
             setter: setWrongAnswerText,
-            placeholder: "如果有错误解答可以粘贴在这里，没有可留空",
+            placeholder: t.directEntry.wrongAnswerPlaceholder,
             minHeight: "min-h-[100px]",
         },
         {
             key: "mistakeAnalysis",
-            label: t.editor?.mistakeAnalysis || "错因分析",
+            label: t.editor?.mistakeAnalysis || "Mistake Cause Analysis",
             value: mistakeAnalysis,
             setter: setMistakeAnalysis,
-            placeholder: "分析错误可能发生在哪一步、为什么错...",
+            placeholder: t.directEntry.mistakeAnalysisPlaceholder,
             minHeight: "min-h-[100px]",
         },
     ];
 
     return (
-        <Card className="border-dashed border-2 hover:border-primary/30 transition-colors">
+        <Card className="rounded-2xl">
             <CardContent className="p-6 space-y-5">
                 {/* Header */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-muted-foreground">
                         <PenLine className="h-5 w-5" />
                         <span className="text-sm font-medium">
-                            直接录入错题内容（支持 Markdown + LaTeX）
+                            {t.directEntry.title}
                         </span>
                     </div>
                     <Button
@@ -152,44 +154,32 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
                         className="text-muted-foreground hover:text-destructive"
                     >
                         <RotateCcw className="h-4 w-4 mr-1" />
-                        重置
+                        {t.directEntry.reset}
                     </Button>
                 </div>
 
                 {/* Notebook & Grade Selection */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="space-y-2">
-                        <Label>{t.editor?.selectNotebook || "选择错题本"} *</Label>
+                        <Label>{t.editor?.selectNotebook || "Select Notebook"} *</Label>
                         <NotebookSelector
                             value={subjectId}
                             onChange={setSubjectId}
                         />
                     </div>
                     <div className="space-y-2">
-                        <Label>{t.editor?.gradeSemester || "年级/学期"}</Label>
+                        <Label>{t.editor?.gradeSemester || "Grade/Semester"}</Label>
                         <input
                             type="text"
                             value={gradeSemester}
                             onChange={(e) => setGradeSemester(e.target.value)}
-                            placeholder="如：初二上学期"
+                            placeholder={t.directEntry.gradeSemesterPlaceholder}
                             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         />
                     </div>
                     <div className="space-y-2">
-                        <Label>{t.editor?.paperLevel || "试卷难度"}</Label>
-                        <Select
-                            value={paperLevel}
-                            onValueChange={setPaperLevel}
-                        >
-                            <SelectTrigger>
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="a">{t.editor?.paperLevels?.a || "A卷/基础"}</SelectItem>
-                                <SelectItem value="b">{t.editor?.paperLevels?.b || "B卷/提高"}</SelectItem>
-                                <SelectItem value="other">{t.editor?.paperLevels?.other || "其他"}</SelectItem>
-                            </SelectContent>
-                        </Select>
+                        <Label>{t.editor?.paperLevel || "Paper Level"}</Label>
+                        <PaperGroupSelect value={paperLevel} onChange={setPaperLevel} />
                     </div>
                 </div>
 
@@ -210,12 +200,12 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
                                 {previewField === field.key ? (
                                     <>
                                         <Edit3 className="h-3 w-3 mr-1" />
-                                        编辑
+                                        {t.directEntry.edit}
                                     </>
                                 ) : (
                                     <>
                                         <Eye className="h-3 w-3 mr-1" />
-                                        预览
+                                        {t.directEntry.preview}
                                     </>
                                 )}
                             </Button>
@@ -242,7 +232,7 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
 
                 {/* Mistake Status */}
                 <div className="space-y-2">
-                    <Label>{t.editor?.mistakeStatus || "作答状态"}</Label>
+                    <Label>{t.editor?.mistakeStatus || "Attempt Status"}</Label>
                     <Select
                         value={mistakeStatus}
                         onValueChange={(val) => setMistakeStatus(val as MistakeStatus)}
@@ -251,25 +241,25 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
                             <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                            <SelectItem value="not_attempted">{t.editor?.mistakeStatuses?.notAttempted || "不会做"}</SelectItem>
-                            <SelectItem value="wrong_attempt">{t.editor?.mistakeStatuses?.wrongAttempt || "做错了"}</SelectItem>
-                            <SelectItem value="unknown">{t.editor?.mistakeStatuses?.unknown || "未判断"}</SelectItem>
+                            <SelectItem value="not_attempted">{t.editor?.mistakeStatuses?.notAttempted || "Not attempted"}</SelectItem>
+                            <SelectItem value="wrong_attempt">{t.editor?.mistakeStatuses?.wrongAttempt || "Wrong attempt"}</SelectItem>
+                            <SelectItem value="unknown">{t.editor?.mistakeStatuses?.unknown || "Unknown"}</SelectItem>
                         </SelectContent>
                     </Select>
                 </div>
 
                 {/* Knowledge Tags */}
                 <div className="space-y-2">
-                    <Label>{t.editor?.tags || "知识点标签"}</Label>
+                    <Label>{t.editor?.tags || "Knowledge Points (Press Enter to add)"}</Label>
                     <TagInput
                         value={knowledgePoints}
                         onChange={setKnowledgePoints}
-                        placeholder={t.editor?.tagsPlaceholder || "输入知识点标签..."}
+                        placeholder={t.editor?.tagsPlaceholder || "Enter knowledge tags, select from suggestions..."}
                         enterHint={t.editor?.createTagHint}
                         subject={inferSubjectFromName(defaultNotebookName || null) || undefined}
                     />
                     <p className="text-xs text-muted-foreground">
-                        {t.editor?.tagsHint || "💡 输入时会自动匹配已有标签"}
+                        {t.editor?.tagsHint || "💡 Tag suggestions will appear as you type"}
                     </p>
                 </div>
 
@@ -278,23 +268,23 @@ export function DirectTextEditor({ onSubmit, defaultNotebookId, defaultNotebookN
                     <Button
                         onClick={handleSubmit}
                         disabled={!questionText.trim() || !subjectId || isSaving}
-                        className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-medium"
+                        className="w-full bg-gradient-to-r from-indigo-600 to-violet-500 hover:from-indigo-700 hover:to-violet-600 text-white font-medium"
                         size="lg"
                     >
                         {isSaving ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                保存中...
+                                {t.directEntry.saving}
                             </>
                         ) : (
                             <>
                                 <Save className="mr-2 h-4 w-4" />
-                                直接保存
+                                {t.directEntry.save}
                             </>
                         )}
                     </Button>
                     <p className="text-xs text-muted-foreground text-center">
-                        填写题目和答案后直接保存，无需 AI 分析 · Ctrl+Enter 快捷保存
+                        {t.directEntry.hint}
                     </p>
                 </div>
             </CardContent>

@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/prisma', () => ({
     prisma: {
         errorItem: mocks.mockPrismaErrorItem,
+        user: { findUnique: vi.fn(async () => ({ masteryThreshold: 50 })) },
     },
 }));
 
@@ -35,10 +36,12 @@ vi.mock('next-auth', () => ({
 vi.mock('@/lib/auth', () => ({
     authOptions: {},
 }));
+vi.mock('@/lib/config', () => ({ getAppTimeZone: () => 'Asia/Shanghai' }));
 
 // Import after mocks
 import { GET } from '@/app/api/analytics/route';
 import { getServerSession } from 'next-auth';
+import type { Session } from 'next-auth';
 
 describe('/api/analytics', () => {
     beforeEach(() => {
@@ -47,6 +50,22 @@ describe('/api/analytics', () => {
     });
 
     describe('GET /api/analytics (获取分析统计)', () => {
+        it('北京时间跨日后使用当天零点到次日零点的统计范围', async () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-10-18T16:01:00Z'));
+            mocks.mockPrismaErrorItem.count.mockResolvedValue(0);
+            mocks.mockPrismaErrorItem.findMany.mockResolvedValue([]);
+            try {
+                const response = await GET();
+                expect(response.status).toBe(200);
+                expect((await response.json()).activityData.at(-1).date).toBe('10-19');
+                expect(mocks.mockPrismaErrorItem.count.mock.calls.at(-1)?.[0].where.createdAt).toEqual({
+                    gte: new Date('2026-10-18T16:00:00Z'), lt: new Date('2026-10-19T16:00:00Z'),
+                });
+            } finally {
+                vi.useRealTimers();
+            }
+        });
         it('应该返回完整的统计数据', async () => {
             // Mock total errors
             mocks.mockPrismaErrorItem.count
@@ -65,8 +84,7 @@ describe('/api/analytics', () => {
                 mocks.mockPrismaErrorItem.count.mockResolvedValueOnce(i + 1);
             }
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -87,19 +105,29 @@ describe('/api/analytics', () => {
                 { subject: { name: '化学' } },
             ]);
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(200);
 
-            const mathStat = data.subjectStats.find((s: any) => s.name === '数学');
+            const mathStat = data.subjectStats.find((s: { name: string }) => s.name === '数学');
             expect(mathStat).toBeDefined();
             expect(mathStat.value).toBe(3);
 
-            const physicsStat = data.subjectStats.find((s: any) => s.name === '物理');
+            const physicsStat = data.subjectStats.find((s: { name: string }) => s.name === '物理');
             expect(physicsStat).toBeDefined();
             expect(physicsStat.value).toBe(1);
+        });
+
+        it('统计学科分布时只读取科目名，不读取原图等大字段', async () => {
+            mocks.mockPrismaErrorItem.count.mockResolvedValue(0);
+            mocks.mockPrismaErrorItem.findMany.mockResolvedValue([]);
+
+            await GET();
+
+            const args = mocks.mockPrismaErrorItem.findMany.mock.calls[0][0];
+            expect(args).not.toHaveProperty('include');
+            expect(args.select).toEqual({ subject: { select: { name: true } } });
         });
 
         it('应该处理没有学科的错题', async () => {
@@ -109,13 +137,12 @@ describe('/api/analytics', () => {
                 { subject: { name: '数学' } },
             ]);
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(200);
 
-            const unknownStat = data.subjectStats.find((s: any) => s.name === 'Unknown');
+            const unknownStat = data.subjectStats.find((s: { name: string }) => s.name === 'Unknown');
             expect(unknownStat).toBeDefined();
             expect(unknownStat.value).toBe(1);
         });
@@ -124,8 +151,7 @@ describe('/api/analytics', () => {
             mocks.mockPrismaErrorItem.count.mockResolvedValue(5);
             mocks.mockPrismaErrorItem.findMany.mockResolvedValue([]);
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -138,8 +164,7 @@ describe('/api/analytics', () => {
             mocks.mockPrismaErrorItem.count.mockResolvedValue(0);
             mocks.mockPrismaErrorItem.findMany.mockResolvedValue([]);
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -154,8 +179,7 @@ describe('/api/analytics', () => {
                 .mockResolvedValueOnce(50);  // masteredCount
             mocks.mockPrismaErrorItem.findMany.mockResolvedValue([]);
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -165,8 +189,7 @@ describe('/api/analytics', () => {
         it('应该拒绝未登录用户', async () => {
             vi.mocked(getServerSession).mockResolvedValue(null);
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(401);
@@ -177,10 +200,9 @@ describe('/api/analytics', () => {
             vi.mocked(getServerSession).mockResolvedValue({
                 user: undefined,
                 expires: '2025-12-31',
-            } as any);
+            } as unknown as Session);
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(401);
@@ -192,8 +214,7 @@ describe('/api/analytics', () => {
                 new Error('Database connection failed')
             );
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(500);
@@ -215,8 +236,7 @@ describe('/api/analytics', () => {
                 mocks.mockPrismaErrorItem.count.mockResolvedValueOnce(0);
             }
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -238,8 +258,7 @@ describe('/api/analytics', () => {
                 mocks.mockPrismaErrorItem.count.mockResolvedValueOnce(0);
             }
 
-            const request = new Request('http://localhost/api/analytics');
-            const response = await GET(request);
+            const response = await GET();
             const data = await response.json();
 
             expect(response.status).toBe(200);

@@ -3,39 +3,65 @@ Dockerfile
 .dockerignore
 docker-compose*.yml
 
-# 依赖和构建产物
+#依赖和构建产物
 node_modules
 npm-debug.log
 .next
+.next-prebuilt
 dist
+dist-scripts
+data
+certs
 
-# 版本控制
+# 安装包构建配置与产物（保留单元测试所需的 packaging/runtime）
+packaging/*
+!packaging/runtime
+
+# 版本控制与开发配置
 .git
 .gitignore
+.gitattributes
+.githooks
+.editorconfig
+.mailmap
+.nvmrc
+.vercel
+.claude
 
 # 环境配置
 .env
 .env.*
+# 本机配置与登录凭据（含密钥），运行时由挂载的配置目录提供
+config/app-config.json
+config/minimax-code.json
+config/background-tasks.json
+config/tts-cache/
 
-# 单元/集成测试文件
-src/__tests__
-vitest.config.ts
+# 构建阶段运行单元/集成测试；最终 standalone 镜像不复制测试目录
 coverage
 
-# E2E 测试文件 (Playwright)
-e2e
+# 保留单元测试复用的 E2E 支持模块，排除浏览器用例与测试产物
+e2e/*
+!e2e/support
 playwright.config.ts
 playwright-report
 test-results
 blob-report
 test_output*.txt
+upload_test_output*.txt
+tests
+perf
 
 # 开发工具
 .vscode
 .idea
 *.log
 .github
+.gitea
+__pycache__
+*.pyc
 *.tsbuildinfo
+*.tsbuildinfoconfig
 
 # 本地数据库
 *.db
@@ -46,5 +72,12 @@ test_output*.txt
 
 # 文档
 README.md
+README.en.md
+CHANGELOG.md
+AGENTS.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md
+SUPPORT.md
 docs
 doc

@@ -1,0 +1,457 @@
+name: Packages
+
+# 全平台安装包：npm、Windows、macOS、Linux、飞牛OS、安卓（单机版、客户端版，各分手机版、平板版）
+# Prisma 引擎与构建机平台绑定，因此每个平台在对应架构的 Runner 上分别构建
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+
+jobs:
+  npm:
+    name: npm
+    runs-on: ubuntu-24.04
+    # 只在 GitHub 上运行；Gitea 读取 main 时会回退到本目录，需跳过
+    if: github.server_url == 'https://github.com'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "PACKAGE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Cache Next.js build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.next/cache
+          key: nextjs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-
+            nextjs-${{ runner.os }}-${{ runner.arch }}-
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Build bundle and npm package
+        run: |
+          node scripts/package/build.mjs bundle
+          node scripts/package/build.mjs npm
+
+      - name: Smoke test npm package
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$(mktemp -d)"
+          data="$(mktemp -d)"
+          npm install -g --prefix "$prefix" ./dist/wrong-notebook-*.tgz
+          "$prefix/bin/wrong-notebook" --port 39400 --host 127.0.0.1 --data-dir "$data" > "$data/server.log" 2>&1 &
+          for _ in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:39400/api/health; then exit 0; fi
+            sleep 1
+          done
+          cat "$data/server.log"
+          exit 1
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-npm
+          path: dist/wrong-notebook-*.tgz
+          if-no-files-found: error
+
+  # 发布单独成一个 Job：npm 发布失败不影响安装包上传到 Release
+  # 使用 npm Trusted Publishing（OIDC），无需 NPM_TOKEN；需在 npmjs.com 包设置中登记本仓库的 packages.yml
+  npm-publish:
+    name: Publish to npm
+    needs: npm
+    if: github.server_url == 'https://github.com' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # Trusted Publishing 需要 npm 11.5.1 及以上，Node.js 24 自带
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: package-npm
+          path: dist
+
+      - name: Publish
+        shell: bash
+        run: |
+          npm --version
+          tag=latest
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then tag=next; fi
+          # OIDC 换取令牌失败时 npm 只在 verbose 日志中说明原因，这里筛出认证相关的行
+          npm publish ./dist/wrong-notebook-*.tgz --access public --provenance --tag "$tag" --loglevel verbose 2>&1 \
+            | grep -viE '^npm (notice|verbose) +[0-9.]+[kMB]* ' \
+            | grep -iE 'oidc|trust|token|auth|provenance|publish|error|^\+ '
+
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    if: github.server_url == 'https://github.com'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            args: --win --x64
+          - name: macos-arm64
+            os: macos-latest
+            args: --mac --arm64
+          - name: macos-x64
+            os: macos-15-intel
+            args: --mac --x64
+          - name: linux-x64
+            os: ubuntu-24.04
+            args: --linux --x64
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            args: --linux --arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      # 审核通过并配置后才启用；分支试构建仍沿用原有的未签名流程。
+      SIGN_WINDOWS: ${{ matrix.name == 'windows-x64' && vars.SIGNPATH_ENABLED == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main') }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "PACKAGE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          fi
+
+      # electron-builder 自带的 fpm 只有 x86_64 版本，arm64 上改用系统 fpm 生成 deb
+      - name: Install fpm (linux arm64)
+        if: matrix.name == 'linux-arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+          echo "USE_SYSTEM_FPM=true" >> "$GITHUB_ENV"
+
+      - name: Cache Next.js and Electron binaries
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ${{ github.workspace }}/.next/cache
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: desktop-${{ matrix.name }}-${{ hashFiles('package-lock.json', 'packaging/desktop/package.json') }}-${{ github.sha }}
+          restore-keys: |
+            desktop-${{ matrix.name }}-${{ hashFiles('package-lock.json', 'packaging/desktop/package.json') }}-
+            desktop-${{ matrix.name }}-
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Build bundle
+        run: node scripts/package/build.mjs bundle
+
+      - name: Build desktop installers (unsigned)
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: node scripts/package/build.mjs desktop ${{ matrix.args }}
+
+      - name: 检查 Windows 签名配置与安装包元数据
+        if: env.SIGN_WINDOWS == 'true'
+        id: windows-signing
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+        run: |
+          foreach ($name in @('SIGNPATH_API_TOKEN', 'SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_PROJECT_SLUG', 'SIGNPATH_SIGNING_POLICY_SLUG', 'SIGNPATH_ARTIFACT_CONFIGURATION_SLUG')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "启用 Windows 签名后必须配置 $name"
+            }
+          }
+          $files = @(Get-ChildItem dist/desktop/release/WrongNotebook-Win-*.exe -File)
+          if ($files.Count -ne 2 -or @($files | Where-Object Name -Match '^WrongNotebook-Win-Setup-.+-x64\.exe$').Count -ne 1 -or @($files | Where-Object Name -Match '^WrongNotebook-Win-Portable-.+-x64\.exe$').Count -ne 1) {
+            throw '必须同时生成一个 Windows 安装版和一个免安装版'
+          }
+          $versions = @($files.VersionInfo.ProductVersion | Select-Object -Unique)
+          if ($versions.Count -ne 1 -or [string]::IsNullOrWhiteSpace($versions[0]) -or @($files | Where-Object { $_.VersionInfo.ProductName -ne 'WrongNotebook' }).Count -ne 0) {
+            throw 'Windows 安装包必须使用 WrongNotebook 产品名和一致的产品版本'
+          }
+          "product-version=$($versions[0])" >> $env:GITHUB_OUTPUT
+
+      # SignPath 验证 GitHub 构建来源；此中间产物不匹配 Release 的 package-* 下载规则。
+      - name: 上传 Windows 未签名产物供 SignPath 验证
+        if: env.SIGN_WINDOWS == 'true'
+        id: unsigned-windows
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unsigned-windows-x64
+          path: dist/desktop/release/WrongNotebook-Win-*.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: 提交 SignPath 请求并等待维护者批准
+        if: env.SIGN_WINDOWS == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-windows.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: ${{ runner.temp }}/signed-windows
+          parameters: |
+            version: ${{ toJSON(steps.windows-signing.outputs.product-version) }}
+
+      - name: 验证 Windows 签名并替换发布文件
+        if: env.SIGN_WINDOWS == 'true'
+        shell: pwsh
+        run: ./scripts/package/verify-windows-signatures.ps1 -UnsignedDirectory dist/desktop/release -SignedDirectory '${{ runner.temp }}/signed-windows'
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-desktop-${{ matrix.name }}
+          path: |
+            dist/desktop/release/WrongNotebook-*.exe
+            dist/desktop/release/WrongNotebook-*.dmg
+            dist/desktop/release/WrongNotebook-*.zip
+            dist/desktop/release/WrongNotebook-*.AppImage
+            dist/desktop/release/WrongNotebook-*.deb
+          if-no-files-found: error
+
+  fnos:
+    name: fnOS (${{ matrix.arch }})
+    if: github.server_url == 'https://github.com'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86
+            os: ubuntu-24.04
+            fnpack: fnpack-1.2.1-linux-amd64
+            sha256: 72d2a4095da676b64510b023731a227b369d80f8079bc45ff8a2f802ec0480c1
+          - arch: arm
+            os: ubuntu-24.04-arm
+            fnpack: fnpack-1.2.1-linux-arm64
+            sha256: aad9e16b101267d30017f39ab969e3c085fbce209716f8bd3b1e167eaf15e0cf
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "PACKAGE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install fnpack
+        run: |
+          curl -fsSL -o /usr/local/bin/fnpack "https://static2.fnnas.com/fnpack/${{ matrix.fnpack }}"
+          echo "${{ matrix.sha256 }}  /usr/local/bin/fnpack" | sha256sum -c -
+          chmod +x /usr/local/bin/fnpack
+
+      - name: Cache Next.js build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.next/cache
+          key: nextjs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-
+            nextjs-${{ runner.os }}-${{ runner.arch }}-
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Build fpk
+        run: |
+          node scripts/package/build.mjs bundle
+          node scripts/package/build.mjs fnos --arch ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-fnos-${{ matrix.arch }}
+          path: dist/WrongNotebook-FnOS-*.fpk
+          if-no-files-found: error
+
+  android:
+    name: Android
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-24.04
+    # 未命中缓存时需要交叉编译 Prisma 引擎
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # Runner 镜像自带 Android SDK（ANDROID_HOME），缺少的平台和构建工具由 Android Gradle 插件自动下载
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "PACKAGE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Cache Next.js build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.next/cache
+          key: nextjs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-
+            nextjs-${{ runner.os }}-${{ runner.arch }}-
+
+      - run: npm ci --no-audit --no-fund
+
+      # 单机版内置的服务端与其他安装包相同
+      - name: Build bundle
+        run: node scripts/package/build.mjs bundle
+
+      # Prisma 不提供安卓引擎，按引擎提交交叉编译并缓存（Runner 自带 rustup 和 Android NDK）
+      - name: Resolve Prisma engines version
+        shell: bash
+        run: |
+          echo "PRISMA_ENGINES_COMMIT=$(node -p "require('./node_modules/@prisma/engines-version/package.json').prisma.enginesVersion")" >> "$GITHUB_ENV"
+          echo "ANDROID_PRISMA_ENGINES_DIR=$RUNNER_TEMP/android-prisma-engines" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: engines-cache
+        with:
+          path: ${{ runner.temp }}/android-prisma-engines
+          key: android-prisma-engines-${{ env.PRISMA_ENGINES_COMMIT }}-${{ hashFiles('scripts/package/build-android-prisma-engines.sh') }}
+
+      - name: Build Prisma engines for Android
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: bash scripts/package/build-android-prisma-engines.sh "$ANDROID_PRISMA_ENGINES_DIR"
+
+      # 组装单机版运行时时用 patchelf 改写 Node.js 依赖库的名称
+      - name: Install patchelf
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+
+      # 发布版必须使用固定的签名密钥，否则用户无法覆盖安装升级
+      - name: Prepare signing key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "::error::未配置 ANDROID_KEYSTORE_BASE64，发布版 APK 必须使用固定签名，见 doc/INSTALL_PACKAGES.md"
+            exit 1
+          else
+            echo "::warning::未配置签名密钥，APK 使用调试签名，仅供测试"
+          fi
+
+      - name: Build APKs
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: node scripts/package/build.mjs android
+
+      - name: Verify signatures
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/release.jks"
+          # 与 app/build.gradle 的 buildToolsVersion 一致，构建时已由 Android Gradle 插件安装
+          apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          for apk in dist/WrongNotebook-Android-*.apk; do
+            echo "== $apk"
+            certs="$("$apksigner" verify --print-certs "$apk")"
+            echo "$certs"
+            if [[ "$GITHUB_REF" == refs/tags/v* ]] && grep -q 'CN=Android Debug' <<< "$certs"; then
+              echo "::error::$apk 使用了调试签名"
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-android
+          path: dist/WrongNotebook-Android-*.apk
+          if-no-files-found: error
+
+  release:
+    name: Upload to Release
+    needs: [npm, desktop, fnos, android]
+    if: github.server_url == 'https://github.com' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: assets
+          pattern: package-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Release 通常已由 release.yml 创建；不存在时先创建
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes ""
+          gh release upload "$GITHUB_REF_NAME" assets/* --clobber --repo "$GITHUB_REPOSITORY"

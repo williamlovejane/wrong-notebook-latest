@@ -1,16 +1,18 @@
 
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
-export async function findParentTagIdForGrade(gradeSemester: string | null | undefined, subjectKey: string): Promise<string | null> {
+export async function findParentTagIdForGrade(gradeSemester: string | null | undefined, subjectKey: string, client: Prisma.TransactionClient = prisma, tagSet: string = 'default'): Promise<string | null> {
     if (!gradeSemester || !subjectKey) return null;
 
-    // Fetch all system root tags for the subject (which are typically Grades)
+    // Fetch all system root tags for the subject + tagSet (which are typically Grades)
     // We filter by parentId: null to get only the top level (Grades)
-    const rootTags = await prisma.knowledgeTag.findMany({
+    const rootTags = await client.knowledgeTag.findMany({
         where: {
             subject: subjectKey,
             isSystem: true,
-            parentId: null
+            parentId: null,
+            tagSet,
         },
         select: { id: true, name: true }
     });
@@ -43,8 +45,10 @@ export async function findParentTagIdForGrade(gradeSemester: string | null | und
         "高三": "高三", "Grade 12": "高三", "Senior 3": "高三",
     };
 
+    // 先匹配较长的写法，否则 "Grade 12" 会先命中 "Grade 1" 被当成一年级
     let targetGradePrefix = "";
-    for (const [key, value] of Object.entries(gradeLevelMap)) {
+    const entries = Object.entries(gradeLevelMap).sort(([a], [b]) => b.length - a.length);
+    for (const [key, value] of entries) {
         if (normalizedInput.includes(key)) {
             targetGradePrefix = value;
             break; // Found the grade level

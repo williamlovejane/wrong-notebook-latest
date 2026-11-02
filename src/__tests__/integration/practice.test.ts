@@ -8,10 +8,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mocks = vi.hoisted(() => ({
     mockPrismaErrorItem: {
         findUnique: vi.fn(),
+        update: vi.fn(),
     },
     mockPrismaPracticeRecord: {
         create: vi.fn(),
+        findUnique: vi.fn(),
+        delete: vi.fn(),
     },
+    getCurrentUser: vi.fn(),
+    scheduleMasteryEvaluation: vi.fn(),
     mockAIService: {
         generateSimilarQuestion: vi.fn(),
     },
@@ -47,10 +52,19 @@ vi.mock('@/lib/auth', () => ({
     authOptions: {},
 }));
 
+vi.mock('@/lib/current-user', () => ({ getCurrentUser: mocks.getCurrentUser }));
+
+vi.mock('@/lib/mastery', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/mastery')>()),
+    scheduleMasteryEvaluation: mocks.scheduleMasteryEvaluation,
+}));
+
 // Import after mocks
-import { POST as GENERATE_POST } from '@/app/api/practice/generate/route';
+import { GET as GENERATE_GET, POST as GENERATE_POST } from '@/app/api/practice/generate/route';
 import { POST as RECORD_POST } from '@/app/api/practice/record/route';
+import { DELETE as RECORD_DELETE } from '@/app/api/practice/record/[id]/route';
 import { getServerSession } from 'next-auth';
+import type { Session } from 'next-auth';
 
 describe('/api/practice', () => {
     beforeEach(() => {
@@ -58,9 +72,58 @@ describe('/api/practice', () => {
         vi.mocked(getServerSession).mockResolvedValue(mocks.mockSession);
     });
 
+    describe('GET /api/practice/generate (读取暂存的举一反三题目)', () => {
+        const cached = {
+            questionText: '求解 3x = 9',
+            answerText: 'x = 3',
+            analysis: '两边除以 3',
+            subject: '数学',
+            figureSvg: null,
+            difficulty: 'easy',
+            generatedAt: '2026-10-24T08:00:00.000Z',
+        };
+
+        it('应该返回最近一次生成的题目', async () => {
+            mocks.mockPrismaErrorItem.findUnique.mockResolvedValue({ userId: 'user-123', lastPractice: JSON.stringify(cached) });
+
+            const response = await GENERATE_GET(new Request('http://localhost/api/practice/generate?errorItemId=error-item-1'));
+            const data = await response.json();
+
+            expect(response.status).toBe(200);
+            expect(data.practice).toEqual(cached);
+            expect(mocks.mockAIService.generateSimilarQuestion).not.toHaveBeenCalled();
+        });
+
+        it('没有暂存或内容损坏时应返回 null', async () => {
+            for (const lastPractice of [null, 'not json', JSON.stringify({ questionText: '' })]) {
+                mocks.mockPrismaErrorItem.findUnique.mockResolvedValue({ userId: 'user-123', lastPractice });
+                const response = await GENERATE_GET(new Request('http://localhost/api/practice/generate?errorItemId=error-item-1'));
+                expect(response.status).toBe(200);
+                expect((await response.json()).practice).toBeNull();
+            }
+        });
+
+        it('不能读取他人错题的暂存题目', async () => {
+            mocks.mockPrismaErrorItem.findUnique.mockResolvedValue({ userId: 'other-user', lastPractice: JSON.stringify(cached) });
+
+            const response = await GENERATE_GET(new Request('http://localhost/api/practice/generate?errorItemId=error-item-1'));
+
+            expect(response.status).toBe(404);
+        });
+
+        it('未登录应返回 401', async () => {
+            vi.mocked(getServerSession).mockResolvedValueOnce(null);
+
+            const response = await GENERATE_GET(new Request('http://localhost/api/practice/generate?errorItemId=error-item-1'));
+
+            expect(response.status).toBe(401);
+        });
+    });
+
     describe('POST /api/practice/generate (生成类似题目)', () => {
         const mockErrorItem = {
             id: 'error-item-1',
+            userId: 'user-123',
             questionText: '求解 x + 2 = 5',
             knowledgePoints: '["一元一次方程", "移项"]',
             subject: { id: 'math', name: '数学' },
@@ -93,6 +156,60 @@ describe('/api/practice', () => {
             expect(response.status).toBe(200);
             expect(data.questionText).toBe('求解 2x - 3 = 7');
             expect(data.subject).toBe('数学');
+            expect(data.difficulty).toBe('medium');
+            expect(typeof data.generatedAt).toBe('string');
+        });
+
+        it('应该暂存最近一次生成的题目与解答', async () => {
+            mocks.mockPrismaErrorItem.findUnique.mockResolvedValue(mockErrorItem);
+            mocks.mockAIService.generateSimilarQuestion.mockResolvedValue({
+                questionText: '求解 3x = 9',
+                answerText: 'x = 3',
+                analysis: '两边除以 3',
+                knowledgePoints: [],
+                figureSvg: '<svg></svg>',
+            });
+
+            const request = new Request('http://localhost/api/practice/generate', {
+                method: 'POST',
+                body: JSON.stringify({ errorItemId: 'error-item-1', language: 'zh', difficulty: 'hard' }),
+                headers: { 'Content-Type': 'application/json' },
+            });
+            const response = await GENERATE_POST(request);
+
+            expect(response.status).toBe(200);
+            expect(mocks.mockPrismaErrorItem.update).toHaveBeenCalledWith({
+                where: { id: 'error-item-1' },
+                data: { lastPractice: expect.any(String) },
+            });
+            const saved = JSON.parse(mocks.mockPrismaErrorItem.update.mock.calls[0][0].data.lastPractice);
+            expect(saved).toMatchObject({
+                questionText: '求解 3x = 9',
+                answerText: 'x = 3',
+                analysis: '两边除以 3',
+                subject: '数学',
+                figureSvg: '<svg></svg>',
+                difficulty: 'hard',
+            });
+            expect(typeof saved.generatedAt).toBe('string');
+        });
+
+        it('暂存失败时仍应返回生成的题目', async () => {
+            mocks.mockPrismaErrorItem.findUnique.mockResolvedValue(mockErrorItem);
+            mocks.mockPrismaErrorItem.update.mockRejectedValueOnce(new Error('db busy'));
+            mocks.mockAIService.generateSimilarQuestion.mockResolvedValue({
+                questionText: '题目', answerText: '答案', analysis: '解析', knowledgePoints: [],
+            });
+
+            const request = new Request('http://localhost/api/practice/generate', {
+                method: 'POST',
+                body: JSON.stringify({ errorItemId: 'error-item-1', language: 'zh' }),
+                headers: { 'Content-Type': 'application/json' },
+            });
+            const response = await GENERATE_POST(request);
+
+            expect(response.status).toBe(200);
+            expect((await response.json()).questionText).toBe('题目');
         });
 
         it('应该支持不同难度级别', async () => {
@@ -151,7 +268,8 @@ describe('/api/practice', () => {
                 expect.any(Array),
                 'zh',
                 'medium', // 默认难度
-                undefined
+                undefined,
+                undefined // 原题无配图
             );
         });
 
@@ -199,8 +317,24 @@ describe('/api/practice', () => {
                 ['一元一次方程', '移项'], // 解析后的标签数组
                 'zh',
                 'medium',
-                undefined
+                undefined,
+                undefined // 原题无配图
             );
+        });
+
+        it('不能基于其他用户的错题生成（返回 404，且不调用 AI）', async () => {
+            mocks.mockPrismaErrorItem.findUnique.mockResolvedValue({ ...mockErrorItem, userId: 'other-user' });
+
+            const request = new Request('http://localhost/api/practice/generate', {
+                method: 'POST',
+                body: JSON.stringify({ errorItemId: 'error-item-1', language: 'zh' }),
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            const response = await GENERATE_POST(request);
+
+            expect(response.status).toBe(404);
+            expect(mocks.mockAIService.generateSimilarQuestion).not.toHaveBeenCalled();
         });
 
         it('应该处理无效的知识点 JSON', async () => {
@@ -234,7 +368,8 @@ describe('/api/practice', () => {
                 [], // 空数组
                 'zh',
                 'medium',
-                undefined
+                undefined,
+                undefined // 原题无配图
             );
         });
 
@@ -377,6 +512,60 @@ describe('/api/practice', () => {
     });
 
     describe('POST /api/practice/record (记录练习结果)', () => {
+        it('直接录入结果：使用指定日期，来源为手动录入并补全错题本名称', async () => {
+            mocks.mockPrismaErrorItem.findUnique.mockResolvedValue({ userId: 'user-123', subject: { name: '数学' } });
+            mocks.mockPrismaPracticeRecord.create.mockResolvedValue({ id: 'record-1' });
+
+            const response = await RECORD_POST(new Request('http://localhost/api/practice/record', {
+                method: 'POST',
+                body: JSON.stringify({ errorItemId: 'error-item-1', result: 'not_attempted', source: 'manual', takenAt: '2026-10-18T04:00:00.000Z' }),
+            }));
+
+            expect(response.status).toBe(200);
+            expect(mocks.mockPrismaPracticeRecord.create).toHaveBeenCalledWith({
+                data: expect.objectContaining({
+                    userId: 'user-123',
+                    errorItemId: 'error-item-1',
+                    result: 'not_attempted',
+                    isCorrect: false,
+                    subject: '数学',
+                    source: 'manual',
+                    createdAt: new Date('2026-10-18T04:00:00.000Z'),
+                }),
+            });
+            expect(mocks.scheduleMasteryEvaluation).toHaveBeenCalledWith(['error-item-1']);
+        });
+
+        it('拒绝未知的记录来源', async () => {
+            const response = await RECORD_POST(new Request('http://localhost/api/practice/record', {
+                method: 'POST',
+                body: JSON.stringify({ errorItemId: 'error-item-1', result: 'correct', source: 'exam' }),
+            }));
+
+            expect(response.status).toBe(400);
+            expect(mocks.mockPrismaPracticeRecord.create).not.toHaveBeenCalled();
+        });
+
+        it('举一反三新题的配图净化后随记录保存', async () => {
+            mocks.mockPrismaErrorItem.findUnique.mockResolvedValue({ userId: 'user-123' });
+            mocks.mockPrismaPracticeRecord.create.mockResolvedValue({ id: 'record-1' });
+
+            const response = await RECORD_POST(new Request('http://localhost/api/practice/record', {
+                method: 'POST',
+                body: JSON.stringify({
+                    errorItemId: 'error-item-1',
+                    result: 'correct',
+                    questionText: '新题',
+                    figureSvg: '<svg viewBox="0 0 4 4"><script>x()</script><line x1="0" y1="0" x2="4" y2="4"/></svg>',
+                }),
+            }));
+
+            expect(response.status).toBeLessThan(300);
+            const data = mocks.mockPrismaPracticeRecord.create.mock.calls[0][0].data;
+            expect(data.figureSvg).toContain('<line');
+            expect(data.figureSvg).not.toContain('script');
+        });
+
         it('应该成功记录正确的练习结果', async () => {
             const createdRecord = {
                 id: 'record-1',
@@ -485,7 +674,7 @@ describe('/api/practice', () => {
             vi.mocked(getServerSession).mockResolvedValue({
                 user: undefined,
                 expires: '2025-12-31',
-            } as any);
+            } as unknown as Session);
 
             const request = new Request('http://localhost/api/practice/record', {
                 method: 'POST',
@@ -524,6 +713,41 @@ describe('/api/practice', () => {
 
             expect(response.status).toBe(500);
             expect(data.message).toBe('Failed to save record');
+        });
+    });
+
+    describe('DELETE /api/practice/record/:id (删除记录)', () => {
+        const params = (id: string) => ({ params: Promise.resolve({ id }) });
+
+        beforeEach(() => {
+            mocks.getCurrentUser.mockResolvedValue({ id: 'user-123' });
+        });
+
+        it('删除自己的记录并重新评估原题', async () => {
+            mocks.mockPrismaPracticeRecord.findUnique.mockResolvedValue({ userId: 'user-123', errorItemId: 'error-item-1' });
+
+            const response = await RECORD_DELETE(new Request('http://localhost'), params('record-1'));
+
+            expect(response.status).toBe(200);
+            expect(mocks.mockPrismaPracticeRecord.delete).toHaveBeenCalledWith({ where: { id: 'record-1' } });
+            expect(mocks.scheduleMasteryEvaluation).toHaveBeenCalledWith(['error-item-1']);
+        });
+
+        it('不能删除他人的记录', async () => {
+            mocks.mockPrismaPracticeRecord.findUnique.mockResolvedValue({ userId: 'other', errorItemId: 'error-item-1' });
+
+            const response = await RECORD_DELETE(new Request('http://localhost'), params('record-1'));
+
+            expect(response.status).toBe(404);
+            expect(mocks.mockPrismaPracticeRecord.delete).not.toHaveBeenCalled();
+        });
+
+        it('未登录返回 401', async () => {
+            mocks.getCurrentUser.mockResolvedValue(null);
+
+            const response = await RECORD_DELETE(new Request('http://localhost'), params('record-1'));
+
+            expect(response.status).toBe(401);
         });
     });
 });

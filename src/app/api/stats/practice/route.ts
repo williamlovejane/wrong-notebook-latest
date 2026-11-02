@@ -2,20 +2,20 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { authOptions } from "@/lib/auth";
 import { getServerSession } from "next-auth";
-import { startOfMonth, subMonths, format } from "date-fns";
+import { getAppTimeZone } from "@/lib/config";
+import { formatDateTime, getMonthStart } from "@/lib/date-time";
 import { unauthorized, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
 
 const logger = createLogger('api:stats:practice');
 
-export async function GET(req: Request) {
+export async function GET() {
     const session = await getServerSession(authOptions);
 
     if (!session || !session.user) {
         return unauthorized();
     }
 
-    // @ts-ignore
     const userId = session.user.id;
 
     try {
@@ -29,12 +29,13 @@ export async function GET(req: Request) {
         });
 
         // 2. Monthly Activity (Last 6 months)
-        const sixMonthsAgo = subMonths(new Date(), 5);
+        const now = new Date();
+        const timeZone = getAppTimeZone();
         const activityStats = await prisma.practiceRecord.findMany({
             where: {
                 userId,
                 createdAt: {
-                    gte: startOfMonth(sixMonthsAgo)
+                    gte: getMonthStart(now, timeZone, -5),
                 }
             },
             select: {
@@ -49,13 +50,12 @@ export async function GET(req: Request) {
 
         // Initialize last 6 months
         for (let i = 5; i >= 0; i--) {
-            const date = subMonths(new Date(), i);
-            const key = format(date, 'yyyy-MM');
+            const key = formatDateTime(getMonthStart(now, timeZone, -i), 'yyyy-MM', timeZone);
             monthlyActivity[key] = { total: 0, correct: 0 };
         }
 
         activityStats.forEach(record => {
-            const date = format(record.createdAt, 'yyyy-MM');
+            const date = formatDateTime(record.createdAt, 'yyyy-MM', timeZone);
             if (monthlyActivity[date]) {
                 monthlyActivity[date].total++;
                 if (record.isCorrect) {

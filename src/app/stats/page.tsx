@@ -1,58 +1,91 @@
 "use client";
 
+import { Suspense } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { usePageTitle } from "@/lib/page-title";
 import { WrongAnswerStats } from "@/components/wrong-answer-stats";
 import { PracticeStats } from "@/components/practice-stats";
+import { TagUsageStats } from "@/components/tags/tag-usage-stats";
+import { TagManagement } from "@/components/tags/tag-management";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Button } from "@/components/ui/button";
-import { BackButton } from "@/components/ui/back-button";
-import { BarChart3, TrendingUp, Activity, House } from "lucide-react";
-import Link from "next/link";
+import { PageHeader } from "@/components/ui/page-header";
+import { TrendingUp, Activity, BarChart3, Tags } from "lucide-react";
 
-export default function StatsPage() {
-    const { t, language } = useLanguage();
+const STATS_TABS = ["wrong", "practice", "tag-stats", "tags"] as const;
+type StatsTab = typeof STATS_TABS[number];
+
+function isStatsTab(value: string | null): value is StatsTab {
+    return STATS_TABS.includes(value as StatsTab);
+}
+
+/** 统计中心 Tab，当前 Tab 记录在 ?tab= 中，便于直达和刷新后保持 */
+function StatsTabs() {
+    const { t } = useLanguage();
+    const router = useRouter();
+    const pathname = usePathname();
+    const searchParams = useSearchParams();
+    const tabParam = searchParams.get("tab");
+    const tab: StatsTab = isStatsTab(tabParam) ? tabParam : "wrong";
+
+    const handleTabChange = (value: string) => {
+        const params = new URLSearchParams(searchParams.toString());
+        if (value === "wrong") params.delete("tab");
+        else params.set("tab", value);
+        const query = params.toString();
+        router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    };
 
     return (
-        <div className="container mx-auto px-4 py-8 max-w-6xl">
-            <div className="flex items-center gap-4 mb-6">
-                <BackButton fallbackUrl="/" />
-                <div>
-                    <h1 className="text-3xl font-bold flex items-center gap-2">
-                        <BarChart3 className="h-8 w-8" />
-                        {t.stats?.headerTitle || "Statistics Center"}
-                    </h1>
-                    <p className="text-muted-foreground mt-1">
-                        {t.stats?.headerDesc || "View your learning progress and data analysis"}
-                    </p>
-                </div>
-                <div className="ml-auto flex items-center">
-                    <Link href="/">
-                        <Button variant="ghost" size="icon">
-                            <House className="h-5 w-5" />
-                        </Button>
-                    </Link>
-                </div>
-            </div>
+        <Tabs value={tab} onValueChange={handleTabChange} className="w-full">
+            <TabsList className="mb-6 grid h-auto w-full grid-cols-2 gap-1 sm:inline-flex sm:h-10 sm:w-auto">
+                <TabsTrigger value="wrong" className="flex items-center gap-2">
+                    <Activity className="h-4 w-4" />
+                    {t.wrongAnswerStats?.title || "Wrong Answer Stats"}
+                </TabsTrigger>
+                <TabsTrigger value="practice" className="flex items-center gap-2">
+                    <TrendingUp className="h-4 w-4" />
+                    {t.stats?.title || "Practice Stats"}
+                </TabsTrigger>
+                <TabsTrigger value="tag-stats" className="flex items-center gap-2">
+                    <BarChart3 className="h-4 w-4" />
+                    {t.stats?.tagStats || "Knowledge Point Stats"}
+                </TabsTrigger>
+                <TabsTrigger value="tags" className="flex items-center gap-2">
+                    <Tags className="h-4 w-4" />
+                    {t.stats?.tagManagement || "Knowledge Points"}
+                </TabsTrigger>
+            </TabsList>
 
-            <Tabs defaultValue="wrong" className="w-full">
-                <TabsList className="grid w-full grid-cols-2 mb-6">
-                    <TabsTrigger value="wrong" className="flex items-center gap-2">
-                        <Activity className="h-4 w-4" />
-                        {t.wrongAnswerStats?.title || "Wrong Answer Stats"}
-                    </TabsTrigger>
-                    <TabsTrigger value="practice" className="flex items-center gap-2">
-                        <TrendingUp className="h-4 w-4" />
-                        {t.stats?.title || "Practice Stats"}
-                    </TabsTrigger>
-                </TabsList>
+            <TabsContent value="wrong" className="space-y-4">
+                <WrongAnswerStats />
+            </TabsContent>
+            <TabsContent value="practice" className="space-y-4">
+                <PracticeStats />
+            </TabsContent>
+            <TabsContent value="tag-stats" className="space-y-4">
+                <TagUsageStats />
+            </TabsContent>
+            <TabsContent value="tags" className="space-y-4">
+                <TagManagement />
+            </TabsContent>
+        </Tabs>
+    );
+}
 
-                <TabsContent value="wrong" className="space-y-4">
-                    <WrongAnswerStats />
-                </TabsContent>
-                <TabsContent value="practice" className="space-y-4">
-                    <PracticeStats />
-                </TabsContent>
-            </Tabs>
-        </div>
+export default function StatsPage() {
+    const { t } = useLanguage();
+    usePageTitle(t.stats.headerTitle);
+
+    return (
+        <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 md:px-8 md:py-8">
+            <PageHeader
+                title={t.stats?.headerTitle || "Statistics Center"}
+                description={t.stats?.headerDesc || "View your learning progress, data analysis and knowledge points"}
+            />
+            <Suspense fallback={null}>
+                <StatsTabs />
+            </Suspense>
+        </main>
     );
 }

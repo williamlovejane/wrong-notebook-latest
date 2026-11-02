@@ -5,27 +5,32 @@
  * 此文件仅保留通用工具函数。
  */
 
+import type { GradeLevel } from "@/lib/ai/types";
+import { DEFAULT_TIME_ZONE, getCalendarDate } from "@/lib/date-time";
+
 /**
  * 根据教育阶段和入学年份计算当前年级数字
- * @param educationStage 教育阶段 ('junior_high' | 'senior_high')
+ * @param educationStage 教育阶段 ('primary' | 'junior_high' | 'senior_high')
  * @param enrollmentYear 入学年份
- * @returns 年级 (7-12) 或 null
+ * @returns 年级 (1-12) 或 null
  */
 export function calculateGradeNumber(
     educationStage: string | null,
-    enrollmentYear: number | null
-): 7 | 8 | 9 | 10 | 11 | 12 | null {
+    enrollmentYear: number | null,
+    timeZone = DEFAULT_TIME_ZONE,
+): GradeLevel | null {
     if (!enrollmentYear) {
         return null;
     }
 
-    // 只处理初中和高中
-    if (educationStage !== 'junior_high' && educationStage !== 'senior_high') {
+    // 只处理小学、初中和高中
+    if (educationStage !== 'primary' && educationStage !== 'junior_high' && educationStage !== 'senior_high') {
         return null;
     }
 
-    const currentYear = new Date().getFullYear();
-    const currentMonth = new Date().getMonth() + 1; // 1-12
+    const now = getCalendarDate(new Date(), timeZone);
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1; // 1-12
 
     // 计算入学后的年数
     let yearsInSchool = currentYear - enrollmentYear;
@@ -35,7 +40,13 @@ export function calculateGradeNumber(
         yearsInSchool -= 1;
     }
 
-    if (educationStage === 'junior_high') {
+    if (educationStage === 'primary') {
+        // 小学: 入学第1年=1年级 ... 第6年=6年级
+        const grade = 1 + yearsInSchool;
+        if (grade >= 1 && grade <= 6) {
+            return grade as GradeLevel;
+        }
+    } else if (educationStage === 'junior_high') {
         // 初中: 入学第1年=7年级, 第2年=8年级, 第3年=9年级
         const grade = 7 + yearsInSchool;
         if (grade >= 7 && grade <= 9) {

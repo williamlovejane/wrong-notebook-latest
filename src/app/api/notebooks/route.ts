@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { getServerSession } from "next-auth";
 import { unauthorized, badRequest, conflict, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
+import { isValidNotebookScope, stageFromEducationStage, STAGE_SUBJECTS, type NotebookSubject } from "@/lib/notebook-scope";
 
 const logger = createLogger('api:notebooks');
 
@@ -42,14 +43,21 @@ export async function GET() {
             },
         });
 
-        // If no notebooks exist, create default ones
+        // If no notebooks exist, create default ones（学段取用户的教育阶段）
         if (notebooks.length === 0) {
-            const defaultSubjects = ["数学", "英语"];
+            const stage = stageFromEducationStage(user.educationStage);
+            const defaults: { name: string; subjectKey: NotebookSubject }[] = [
+                { name: "数学", subjectKey: "math" },
+                { name: "英语", subjectKey: "english" },
+            ];
+            const defaultSubjects = defaults.filter((subject) => STAGE_SUBJECTS[stage].includes(subject.subjectKey));
 
-            await Promise.all(defaultSubjects.map(name =>
+            await Promise.all(defaultSubjects.map(({ name, subjectKey }) =>
                 prisma.subject.create({
                     data: {
                         name,
+                        stage,
+                        subjectKey,
                         userId: user!.id,
                     }
                 })
@@ -100,11 +108,17 @@ export async function POST(req: Request) {
         }
 
         const body = await req.json();
-        const { name } = body;
+        const { name, stage, subjectKey, tagSet } = body;
 
-        if (!name || !name.trim()) {
+        if (typeof name !== "string" || !name.trim()) {
             return badRequest("Notebook name is required");
         }
+        // 学段和学科只能在创建时选择，之后不可修改
+        if (!isValidNotebookScope(stage, subjectKey)) {
+            return badRequest("A valid stage and subject are required");
+        }
+        // 标签体系：非空字符串，默认 default
+        const finalTagSet = typeof tagSet === 'string' && tagSet.trim() ? tagSet.trim() : 'default';
 
         // 检查是否已存在同名错题本
         const existing = await prisma.subject.findUnique({
@@ -123,6 +137,9 @@ export async function POST(req: Request) {
         const notebook = await prisma.subject.create({
             data: {
                 name: name.trim(),
+                stage,
+                subjectKey,
+                tagSet: finalTagSet,
                 userId: user.id,
             },
             include: {

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
         update: vi.fn(),
         delete: vi.fn(),
     },
+    mockAiUsage: { groupBy: vi.fn() },
     mockSession: {
         user: {
             id: 'admin-id',
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/prisma', () => ({
     prisma: {
         user: mocks.mockPrismaUser,
+        aiUsage: mocks.mockAiUsage,
     },
 }));
 
@@ -73,6 +75,7 @@ describe('/api/admin/users', () => {
                 },
             ];
             mocks.mockPrismaUser.findMany.mockResolvedValue(mockUsers);
+            mocks.mockAiUsage.groupBy.mockResolvedValue([{ userId: 'user-1', _count: { _all: 7 } }]);
 
             const response = await GET();
             const data = await response.json();
@@ -80,6 +83,9 @@ describe('/api/admin/users', () => {
             expect(response.status).toBe(200);
             expect(data).toHaveLength(2);
             expect(data[0].email).toBe('user1@example.com');
+            // 附带今日 AI 调用次数，没有记录的用户为 0
+            expect(data.map((user: { aiUsageToday: number }) => user.aiUsageToday)).toEqual([7, 0]);
+            expect(mocks.mockAiUsage.groupBy).toHaveBeenCalledWith(expect.objectContaining({ by: ['userId'] }));
         });
 
         it('应该拒绝非管理员访问', async () => {

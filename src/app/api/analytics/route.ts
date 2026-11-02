@@ -2,20 +2,22 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { authOptions } from "@/lib/auth";
 import { getServerSession } from "next-auth";
-import { startOfMonth, subMonths, format, startOfWeek, subDays } from "date-fns";
+import { getAppTimeZone } from "@/lib/config";
+import { formatDateTime, getDayRange } from "@/lib/date-time";
 import { unauthorized, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
+import { getMasteryThreshold } from "@/lib/mastery";
+import { masteryStatusWhere } from "@/lib/mastery-status";
 
 const logger = createLogger('api:analytics');
 
-export async function GET(req: Request) {
+export async function GET() {
     const session = await getServerSession(authOptions);
 
     if (!session || !session.user) {
         return unauthorized();
     }
 
-    // @ts-ignore
     const userId = session.user.id;
 
     try {
@@ -26,21 +28,19 @@ export async function GET(req: Request) {
 
         // 2. Mastered Count
         const masteredCount = await prisma.errorItem.count({
-            where: {
-                userId,
-                masteryLevel: { gt: 0 }
-            }
+            where: { AND: [{ userId }, masteryStatusWhere('mastered', await getMasteryThreshold(userId))] }
         });
 
         // 3. Mastery Rate
         const masteryRate = totalErrors > 0 ? ((masteredCount / totalErrors) * 100).toFixed(1) : 0;
 
         // 4. Subject Distribution - Get error items grouped by subject
+        // 只取科目名：错题行里有 base64 原图、解答和动画等大字段，不能整行读出
         const errorItemsWithSubject = await prisma.errorItem.findMany({
             where: { userId },
-            include: {
-                subject: true
-            }
+            select: {
+                subject: { select: { name: true } },
+            },
         });
 
         const subjectMap = new Map<string, number>();
@@ -56,23 +56,19 @@ export async function GET(req: Request) {
 
         // 5. Activity Data (Last 7 days) - Track ErrorItem creation (not practice)
         const activityData = [];
+        const timeZone = getAppTimeZone();
+        const now = new Date();
         for (let i = 6; i >= 0; i--) {
-            const targetDate = subDays(new Date(), i);
-            const dateStr = format(targetDate, 'MM-dd');
-
-            const startOfDay = new Date(targetDate);
-            startOfDay.setHours(0, 0, 0, 0);
-
-            const endOfDay = new Date(targetDate);
-            endOfDay.setHours(23, 59, 59, 999);
+            const { start, end } = getDayRange(now, timeZone, -i);
+            const dateStr = formatDateTime(start, 'MM-dd', timeZone);
 
             // Count error items created on this day
             const count = await prisma.errorItem.count({
                 where: {
                     userId,
                     createdAt: {
-                        gte: startOfDay,
-                        lt: endOfDay
+                        gte: start,
+                        lt: end,
                     }
                 }
             });

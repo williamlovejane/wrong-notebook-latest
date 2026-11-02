@@ -1,0 +1,61 @@
+# Dependabot：每周检查依赖更新，安全更新随时提交。
+# 次要版本和补丁版本合并成一个 PR，主版本升级单独提 PR，合并前须通过 CI。
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Prisma 5 → 6/7 涉及迁移与安卓单机版引擎交叉编译，需人工评估后升级
+      - dependency-name: prisma
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@prisma/client"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: npm
+    directory: /packaging/desktop
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Shanghai
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      desktop:
+        patterns: ["*"]
+
+  - package-ecosystem: gradle
+    directory: /packaging/android
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Shanghai
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      android:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Shanghai
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]

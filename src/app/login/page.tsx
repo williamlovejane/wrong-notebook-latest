@@ -1,21 +1,47 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import Link from "next/link";
+import { AuthShell } from "@/components/auth-shell";
+import { SetupGuide } from "@/components/initialize/setup-guide";
+import { LoginHelp } from "@/components/login-help";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { TOO_MANY_ATTEMPTS } from "@/lib/auth-errors";
+import { frontendLogger } from "@/lib/frontend-logger";
+import { usePageTitle } from "@/lib/page-title";
 
 export default function LoginPage() {
     const router = useRouter();
-    const { t, language } = useLanguage();
+    const { t } = useLanguage();
+    usePageTitle(t.pageTitle.login);
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+    const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null);
+    // 尚未创建管理员时提示使用初始化链接；未知时按已初始化处理，不显示提示
+    const [initialized, setInitialized] = useState(true);
+
+    const checkRegistrationStatus = useCallback(async () => {
+        try {
+            const res = await fetch("/api/register/status");
+            const data = await res.json();
+            setAllowRegistration(data.allowRegistration === true);
+            setInitialized(data.initialized !== false);
+        } catch (error) {
+            frontendLogger.error('[Login]', 'Failed to check registration status', { error });
+            setAllowRegistration(false); // 无法确认时按关闭处理，不显示可能打不开的注册入口
+        }
+    }, []);
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面时获取是否开放注册
+        checkRegistrationStatus();
+    }, [checkRegistrationStatus]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -29,13 +55,15 @@ export default function LoginPage() {
                 password,
             });
 
-            if (result?.error) {
+            if (result?.error === TOO_MANY_ATTEMPTS) {
+                setError(t.auth?.login?.tooManyAttempts || 'Too many failed attempts, please try again later');
+            } else if (result?.error) {
                 setError(t.auth?.login?.failed || 'Login failed');
             } else {
                 router.push("/");
                 router.refresh();
             }
-        } catch (error) {
+        } catch {
             setError(t.auth?.login?.error || 'An error occurred');
         } finally {
             setLoading(false);
@@ -43,14 +71,15 @@ export default function LoginPage() {
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-            <Card className="w-full max-w-md">
+        <AuthShell>
+            <Card className="w-full rounded-2xl border-0 shadow-xl shadow-indigo-500/5 ring-1 ring-border">
                 <CardHeader>
                     <CardTitle className="text-2xl text-center">
                         {t.auth?.login?.title || 'Login'}
                     </CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
+                    {!initialized && <SetupGuide />}
                     <form onSubmit={handleSubmit} className="space-y-4">
                         <div className="space-y-2">
                             <label htmlFor="email" className="text-sm font-medium">
@@ -79,22 +108,17 @@ export default function LoginPage() {
                             />
                         </div>
                         {error && (
-                            <div className="text-red-500 text-sm text-center">{error}</div>
+                            <div className="rounded-lg bg-destructive/10 px-3 py-2 text-center text-sm text-destructive">{error}</div>
                         )}
-                        <Button type="submit" className="w-full" disabled={loading}>
+                        <Button type="submit" size="lg" className="w-full" disabled={loading}>
                             {loading
                                 ? (t.auth?.login?.loggingIn || 'Logging in...')
                                 : (t.auth?.login?.action || 'Login')}
                         </Button>
-                        <div className="text-center text-sm text-muted-foreground">
-                            {t.auth?.login?.noAccount || "Don't have an account? "}
-                            <Link href="/register" className="text-primary hover:underline">
-                                {t.auth?.login?.registerNow || 'Register now'}
-                            </Link>
-                        </div>
+                        <LoginHelp allowRegistration={allowRegistration} />
                     </form>
                 </CardContent>
             </Card>
-        </div>
+        </AuthShell>
     );
 }

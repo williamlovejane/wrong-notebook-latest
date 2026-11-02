@@ -2,15 +2,23 @@ import { NextResponse } from "next/server";
 import { getAIService } from "@/lib/ai";
 import { authOptions } from "@/lib/auth";
 import { getServerSession } from "next-auth";
-import { calculateGradeNumber, inferSubjectFromName } from "@/lib/knowledge-tags";
-import { calculateGrade } from "@/lib/grade-calculator";
+import { getQuestionGradeContext, resolveQuestionGrade } from "@/lib/question-grade";
+import type { QuestionGradeProfile } from "@/lib/question-grade";
 import { prisma } from "@/lib/prisma";
-import { badRequest, internalError, createErrorResponse, ErrorCode } from "@/lib/api-errors";
+import { badRequest, createErrorResponse, ErrorCode } from "@/lib/api-errors";
+import type { CandidateTags, GradeLevel } from "@/lib/ai/types";
+import { getNotebookCandidateTags } from "@/lib/ai/tag-service";
+import { resolveNotebookScope, SUBJECT_DISPLAY_NAMES } from "@/lib/notebook-scope";
 import { createLogger } from "@/lib/logger";
+import { trackBackgroundTask } from "@/lib/background-tasks";
+import { getAppTimeZone } from "@/lib/config";
+import { getErrorMessage } from "@/lib/error-message";
+import { consumeAiQuota } from "@/lib/ai-quota";
+import { withRecoverableResponse } from "@/lib/recoverable-response";
 
 const logger = createLogger('api:analyze');
 
-export async function POST(req: Request) {
+async function handlePost(req: Request) {
     logger.info('Analyze API called');
 
     const session = await getServerSession(authOptions);
@@ -23,7 +31,8 @@ export async function POST(req: Request) {
 
     try {
         const body = await req.json();
-        let { imageBase64, mimeType, language, subjectId } = body;
+        const { language, subjectId } = body;
+        let { imageBase64, mimeType } = body;
 
         logger.debug({
             imageLength: imageBase64?.length,
@@ -48,36 +57,42 @@ export async function POST(req: Request) {
         }
 
         // 先获取用户年级信息，用于动态生成 AI prompt 中的标签列表
-        let userGrade: 7 | 8 | 9 | 10 | 11 | 12 | null = null;
+        let userGrade: GradeLevel | null = null;
         let userGradeSemester: string | null = null;
-        let subjectName: 'math' | 'physics' | 'chemistry' | 'biology' | 'english' | 'chinese' | 'history' | 'geography' | 'politics' | null = null;
+        let subjectChinese: string | null = null;
+        let candidateTags: CandidateTags | undefined;
+        let notebookName: string | null = null;
+        let gradeProfile: QuestionGradeProfile | null = null;
 
         if (session?.user?.email) {
             try {
                 // 获取用户信息
                 const user = await prisma.user.findUnique({
                     where: { email: session.user.email },
-                    select: { educationStage: true, enrollmentYear: true }
+                    select: { id: true, educationStage: true, enrollmentYear: true, gradeRecognitionMode: true, fixedGradeSemester: true }
                 });
 
                 if (user) {
-                    userGrade = calculateGradeNumber(user.educationStage, user.enrollmentYear);
-                    if (user.educationStage && user.enrollmentYear) {
-                        userGradeSemester = calculateGrade(user.educationStage, user.enrollmentYear, new Date(), 'zh');
-                    }
+                    gradeProfile = user;
+                    const context = getQuestionGradeContext(user, getAppTimeZone());
+                    userGrade = context.grade;
+                    userGradeSemester = context.gradeSemester;
                     logger.debug({ userGrade, userGradeSemester }, 'Calculated user grade');
                 }
 
-                // 获取错题本信息以推断学科
-                if (subjectId) {
-                    const subject = await prisma.subject.findUnique({
+                // 错题本的学段 + 学科决定候选知识点：直接取该范围内的全部标签
+                if (subjectId && user) {
+                    const notebook = await prisma.subject.findUnique({
                         where: { id: subjectId },
-                        select: { name: true }
+                        select: { name: true, userId: true, stage: true, subjectKey: true, tagSet: true }
                     });
 
-                    if (subject) {
-                        subjectName = inferSubjectFromName(subject.name);
-                        logger.debug({ subjectName, subjectDisplayName: subject.name }, 'Inferred subject');
+                    if (notebook && notebook.userId === user.id) {
+                        notebookName = notebook.name;
+                        const scope = resolveNotebookScope(notebook);
+                        subjectChinese = scope.subject ? SUBJECT_DISPLAY_NAMES[scope.subject] : null;
+                        candidateTags = await getNotebookCandidateTags(scope, notebook.tagSet || 'default');
+                        logger.debug({ scope, tagSet: notebook.tagSet, candidateTagCount: candidateTags?.tags.length }, 'Notebook scope resolved');
                     }
                 }
             } catch (error) {
@@ -87,23 +102,15 @@ export async function POST(req: Request) {
         }
 
 
-        // 将内部科目名称转换为中文科目名称
-        const subjectNameMapping: Record<string, string> = {
-            'math': '数学',
-            'physics': '物理',
-            'chemistry': '化学',
-            'biology': '生物',
-            'english': '英语',
-            'chinese': '语文',
-            'history': '历史',
-            'geography': '地理',
-            'politics': '政治',
-        };
-        const subjectChinese = subjectName ? subjectNameMapping[subjectName] : null;
-
         logger.info({ userGrade, userGradeSemester, subject: subjectChinese }, 'Calling AI service for image analysis');
+        const limited = await consumeAiQuota(session.user, 'analyze');
+        if (limited) return limited;
+
         const aiService = getAIService();
-        const analysisResult = await aiService.analyzeImage(imageBase64, mimeType, language, userGrade, subjectChinese, userGradeSemester);
+        const analysisResult = await trackBackgroundTask(
+            { userId: session.user.id, kind: 'analyze', subject: notebookName },
+            () => aiService.analyzeImage(imageBase64, mimeType, language, userGrade, subjectChinese, userGradeSemester, candidateTags)
+        );
 
         logger.debug({
             knowledgePointsCount: analysisResult.knowledgePoints?.length,
@@ -118,39 +125,47 @@ export async function POST(req: Request) {
 
         logger.info('AI analysis successful');
 
-        return NextResponse.json(analysisResult);
-    } catch (error: any) {
+        return NextResponse.json(gradeProfile ? {
+            ...analysisResult,
+            gradeSemester: resolveQuestionGrade(gradeProfile, { recognizedGradeSemester: analysisResult.gradeSemester }, getAppTimeZone()),
+        } : analysisResult);
+    } catch (error) {
+        const message = getErrorMessage(error);
         logger.error({
-            error: error.message,
-            stack: error.stack
+            error: message,
+            stack: error instanceof Error ? error.stack : undefined
         }, 'Analysis error occurred');
 
         // 返回具体的错误类型，便于前端显示详细提示
-        let errorMessage = error.message || "Failed to analyze image";
+        let errorMessage = message || "Failed to analyze image";
 
         // 识别特定错误类型
-        if (error.message && (
-            error.message === 'AI_CONNECTION_FAILED' ||
-            error.message === 'AI_RESPONSE_ERROR' ||
-            error.message.includes('AI_AUTH_ERROR') ||
-            error.message === 'AI_TIMEOUT_ERROR' ||
-            error.message === 'AI_QUOTA_EXCEEDED' ||
-            error.message === 'AI_PERMISSION_DENIED' ||
-            error.message === 'AI_NOT_FOUND' ||
-            error.message === 'AI_SERVICE_UNAVAILABLE' ||
-            error.message === 'AI_UNKNOWN_ERROR'
+        if (message && (
+            message === 'AI_CONNECTION_FAILED' ||
+            message === 'AI_RESPONSE_ERROR' ||
+            message.includes('AI_AUTH_ERROR') ||
+            message === 'AI_TIMEOUT_ERROR' ||
+            message === 'AI_QUOTA_EXCEEDED' ||
+            message === 'AI_PERMISSION_DENIED' ||
+            message === 'AI_NOT_FOUND' ||
+            message === 'AI_SERVICE_UNAVAILABLE' ||
+            message === 'AI_UNKNOWN_ERROR' ||
+            message === 'AI_OUTPUT_TRUNCATED'
         )) {
             // 直接传递 AI Provider 定义的错误类型 (如果是 AI_AUTH_ERROR，提取出来)
-            if (error.message.includes('AI_AUTH_ERROR')) {
+            if (message.includes('AI_AUTH_ERROR')) {
                 errorMessage = 'AI_AUTH_ERROR';
             } else {
-                errorMessage = error.message;
+                errorMessage = message;
             }
-        } else if (error.message?.includes('Zod') || error.message?.includes('validate')) {
+        } else if (message.includes('Zod') || message.includes('validate')) {
             // Zod 验证错误
             errorMessage = 'AI_RESPONSE_ERROR';
         }
 
-        return createErrorResponse(errorMessage, 500, ErrorCode.AI_ERROR, error.message);
+        return createErrorResponse(errorMessage, 500, ErrorCode.AI_ERROR, message);
     }
 }
+
+/** 耗时 AI 请求：浏览器中断连接后，前端可通过 /api/requests/:id 取回响应 */
+export const POST = withRecoverableResponse(handlePost);

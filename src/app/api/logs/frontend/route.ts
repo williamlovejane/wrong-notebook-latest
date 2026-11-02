@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
+import { unauthorized } from '@/lib/api-errors';
 import { createLogger } from '@/lib/logger';
 
 const logger = createLogger('frontend-logs');
+
+// 单次最多接收的日志条数与单条消息长度，防止刷爆日志
+const MAX_LOGS_PER_REQUEST = 50;
+const MAX_MESSAGE_LENGTH = 2000;
 
 export const runtime = 'nodejs';
 
@@ -9,7 +16,7 @@ interface FrontendLogEntry {
   level: 'info' | 'warn' | 'error';
   prefix: string;
   message: string;
-  context?: Record<string, any>;
+  context?: Record<string, unknown>;
   timestamp: string;
   url?: string;
   userAgent?: string;
@@ -26,14 +33,20 @@ interface BatchLogRequest {
  * Supports both single log and batch log formats.
  */
 export async function POST(request: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return unauthorized('Authentication required');
+  }
+
   try {
-    const body = await request.json();
+    const body = await request.json() as Partial<BatchLogRequest> & FrontendLogEntry;
 
     // 支持批量日志格式 { logs: [...] } 和单条日志格式
-    const logs: FrontendLogEntry[] = Array.isArray(body.logs) ? body.logs : [body];
+    const logs: FrontendLogEntry[] = (Array.isArray(body.logs) ? body.logs : [body]).slice(0, MAX_LOGS_PER_REQUEST);
 
     for (const entry of logs) {
-      const { level, prefix, message, context = {}, timestamp, url, userAgent } = entry;
+      const { level, prefix, context = {}, timestamp, url, userAgent } = entry;
+      const message = String(entry.message ?? '').slice(0, MAX_MESSAGE_LENGTH);
 
       // Build log context
       const logContext = {
@@ -43,6 +56,7 @@ export async function POST(request: NextRequest) {
         userAgent: userAgent || request.headers.get('user-agent'),
         clientTime: timestamp,
         ...context,
+        userId: session.user.id, // 放在最后，避免被前端传入的 context 覆盖
       };
 
       // Log to backend using appropriate level

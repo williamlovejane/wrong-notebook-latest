@@ -1,0 +1,94 @@
+#!/bin/bash
+# 飞牛OS 服务控制：start / stop / status / restart
+set -euo pipefail
+
+APP_NAME="${TRIM_APPNAME:-wrongnotebook}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+    DATA_DIR="${TRIM_PKGVAR}"
+else
+    APP_VOL="$(printf '%s' "$(readlink -f "${APP_DIR}")" | awk -F/ 'NF>2 && $2 ~ /^vol/ {print "/"$2; exit}')"
+    DATA_DIR="${APP_VOL:+${APP_VOL}/@appdata/${APP_NAME}}"
+    DATA_DIR="${DATA_DIR:-${APP_DIR}/var}"
+fi
+
+if [ -d "${APP_DIR}/server" ]; then
+    SRC_DIR="${APP_DIR}/server"
+elif [ -d "${APP_DIR}/target/server" ]; then
+    SRC_DIR="${APP_DIR}/target/server"
+else
+    echo "ERROR: server dir not found" >&2
+    exit 1
+fi
+
+# Node.js 运行时由应用中心的 nodejs_v24 提供（manifest install_dep_apps）
+NODE_BIN=""
+APP_VOL="$(printf '%s' "${DATA_DIR}" | awk -F/ 'NF>2 && $2 ~ /^vol/ {print "/"$2; exit}')"
+for cand in "/var/apps/nodejs_v24/target/bin/node" "${APP_VOL}/@appcenter/nodejs_v24/bin/node"; do
+    [ -x "${cand}" ] && NODE_BIN="${cand}" && break
+done
+[ -n "${NODE_BIN}" ] || NODE_BIN="$(command -v node || echo /usr/bin/node)"
+if [ ! -x "${NODE_BIN}" ]; then
+    echo "ERROR: 未找到 Node.js，请先在飞牛应用中心安装 Node.js v24" >&2
+    exit 1
+fi
+
+PORT="${TRIM_SERVICE_PORT:-39300}"
+LOG="${DATA_DIR}/wrong-notebook.log"
+PID_FILE="${DATA_DIR}/wrong-notebook.pid"
+
+is_running() {
+    [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null
+}
+
+start() {
+    mkdir -p "${DATA_DIR}"
+    if is_running; then
+        echo "already running (pid $(cat "${PID_FILE}"))"
+        return 0
+    fi
+    cd "${SRC_DIR}"
+    nohup "${NODE_BIN}" launcher.js --port "${PORT}" --host 0.0.0.0 --data-dir "${DATA_DIR}" >> "${LOG}" 2>&1 &
+    echo $! > "${PID_FILE}"
+    # 首次启动需要复制数据库并执行迁移，留足时间
+    for _ in $(seq 1 90); do
+        if curl -sf "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+            echo "started (pid $(cat "${PID_FILE}"))"
+            return 0
+        fi
+        if ! is_running; then
+            echo "ERROR: 启动失败，请查看日志 ${LOG}" >&2
+            rm -f "${PID_FILE}"
+            return 1
+        fi
+        sleep 1
+    done
+    echo "started, but health check timed out (check ${LOG})"
+}
+
+stop() {
+    if [ -f "${PID_FILE}" ]; then
+        kill "$(cat "${PID_FILE}")" 2>/dev/null || true
+        rm -f "${PID_FILE}"
+    fi
+    pkill -f "${SRC_DIR}/launcher.js" 2>/dev/null || true
+    pkill -f "launcher.js --port ${PORT} --host 0.0.0.0 --data-dir ${DATA_DIR}" 2>/dev/null || true
+    echo "stopped"
+}
+
+status() {
+    if is_running; then
+        echo "running"
+        return 0
+    fi
+    echo "stopped"
+    return 1
+}
+
+case "${1:-start}" in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "Usage: $0 {start|stop|status|restart}"; exit 1 ;;
+esac

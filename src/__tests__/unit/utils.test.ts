@@ -3,7 +3,7 @@
  * 测试 cn 合并类名函数
  */
 import { describe, it, expect } from 'vitest';
-import { cn } from '@/lib/utils';
+import { cn, normalizeHttpBaseUrl, trimTrailingSlashes } from '@/lib/utils';
 
 describe('cn (className utility)', () => {
     it('应该合并多个类名', () => {
@@ -50,5 +50,31 @@ describe('cn (className utility)', () => {
     it('应该处理空调用', () => {
         const result = cn();
         expect(result).toBe('');
+    });
+});
+
+describe('trimTrailingSlashes', () => {
+    it('去掉末尾的所有斜杠', () => {
+        expect(trimTrailingSlashes('https://a.example/v1///')).toBe('https://a.example/v1');
+        expect(trimTrailingSlashes('https://a.example')).toBe('https://a.example');
+        expect(trimTrailingSlashes('///')).toBe('');
+    });
+
+    it('大量斜杠也能快速处理', () => {
+        const input = `x${'/'.repeat(100_000)}y`;
+        expect(trimTrailingSlashes(input)).toBe(input);
+    });
+});
+
+describe('normalizeHttpBaseUrl', () => {
+    it('接受 http/https 并去掉末尾斜杠', () => {
+        expect(normalizeHttpBaseUrl('https://api.example.com/v1/')).toBe('https://api.example.com/v1');
+        expect(normalizeHttpBaseUrl('http://localhost:11434')).toBe('http://localhost:11434');
+    });
+
+    it('拒绝其他协议和无效地址', () => {
+        expect(() => normalizeHttpBaseUrl('file:///etc/passwd')).toThrow(/http or https/);
+        expect(() => normalizeHttpBaseUrl('javascript:alert(1)')).toThrow(/http or https/);
+        expect(() => normalizeHttpBaseUrl('api.example.com')).toThrow(/Invalid base URL/);
     });
 });

@@ -15,7 +15,7 @@ interface LogEntry {
   level: LogLevel;
   prefix: string;
   message: string;
-  context?: Record<string, any>;
+  context?: Record<string, unknown>;
   timestamp: string;
   url: string;
   userAgent: string;
@@ -31,6 +31,15 @@ const FLUSH_DELAY_MS = 1000;
 /** 缓冲区最大条目数，超过自动刷新 */
 const MAX_BUFFER_SIZE = 20;
 
+/** Error 对象经 JSON 序列化后为空对象，发送前转成名称与消息 */
+function serializeContext(context?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!context) return context;
+  return Object.fromEntries(Object.entries(context).map(([key, value]) => [
+    key,
+    value instanceof Error ? { name: value.name, message: value.message } : value,
+  ]));
+}
+
 class FrontendLogger {
   private buffer: LogEntry[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -39,13 +48,13 @@ class FrontendLogger {
     level: LogLevel,
     prefix: string,
     message: string,
-    context?: Record<string, any>
+    context?: Record<string, unknown>
   ) {
     const entry: LogEntry = {
       level,
       prefix,
       message,
-      context,
+      context: serializeContext(context),
       timestamp: new Date().toISOString(),
       url: typeof window !== 'undefined' ? window.location.href : '',
       userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
@@ -99,12 +108,12 @@ class FrontendLogger {
         // Silently fail - don't disrupt user experience
         console.warn('Failed to send logs to backend:', err);
       });
-    } catch (err) {
+    } catch {
       // Silently fail
     }
   }
 
-  info(prefix: string, message: string, context?: Record<string, any>, options: LogOptions = {}) {
+  info(prefix: string, message: string, context?: Record<string, unknown>, options: LogOptions = {}) {
     console.log(`${prefix} ${message}`, context || '');
 
     if (options.sendToBackend !== false) {
@@ -112,7 +121,7 @@ class FrontendLogger {
     }
   }
 
-  warn(prefix: string, message: string, context?: Record<string, any>, options: LogOptions = {}) {
+  warn(prefix: string, message: string, context?: Record<string, unknown>, options: LogOptions = {}) {
     console.warn(`${prefix} ${message}`, context || '');
 
     if (options.sendToBackend !== false) {
@@ -120,7 +129,7 @@ class FrontendLogger {
     }
   }
 
-  error(prefix: string, message: string, context?: Record<string, any>, options: LogOptions = {}) {
+  error(prefix: string, message: string, context?: Record<string, unknown>, options: LogOptions = {}) {
     console.error(`${prefix} ${message}`, context || '');
 
     if (options.sendToBackend !== false) {
@@ -137,3 +146,37 @@ class FrontendLogger {
 }
 
 export const frontendLogger = new FrontendLogger();
+
+let globalHandlersInstalled = false;
+
+/**
+ * 上报浏览器中未捕获的异常与未处理的 Promise 拒绝，
+ * 管理员开启调试模式后这些错误会进入调试日志。返回卸载函数。
+ */
+export function installGlobalErrorLogging(): () => void {
+  if (typeof window === 'undefined' || globalHandlersInstalled) return () => undefined;
+  globalHandlersInstalled = true;
+
+  const onError = (event: ErrorEvent) => {
+    frontendLogger.error('[GlobalError]', event.message || 'Uncaught error', {
+      source: event.filename,
+      line: event.lineno,
+      column: event.colno,
+      stack: event.error instanceof Error ? event.error.stack : undefined,
+    });
+  };
+  const onRejection = (event: PromiseRejectionEvent) => {
+    const reason: unknown = event.reason;
+    frontendLogger.error('[GlobalError]', 'Unhandled promise rejection', {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+  };
+  window.addEventListener('error', onError);
+  window.addEventListener('unhandledrejection', onRejection);
+  return () => {
+    window.removeEventListener('error', onError);
+    window.removeEventListener('unhandledrejection', onRejection);
+    globalHandlersInstalled = false;
+  };
+}

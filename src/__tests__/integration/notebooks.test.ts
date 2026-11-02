@@ -95,8 +95,10 @@ describe('/api/notebooks', () => {
 
             expect(response.status).toBe(200);
             expect(data).toHaveLength(2);
-            // 验证创建了默认错题本
+            // 验证创建了默认错题本，带上学段和学科
             expect(mocks.mockPrismaSubject.create).toHaveBeenCalledTimes(2);
+            expect(mocks.mockPrismaSubject.create.mock.calls.map((call) => call[0].data.subjectKey).sort()).toEqual(['english', 'math']);
+            expect(mocks.mockPrismaSubject.create.mock.calls[0][0].data.stage).toMatch(/^(primary|junior_high|senior_high)$/);
         });
     });
 
@@ -113,7 +115,7 @@ describe('/api/notebooks', () => {
 
             const request = new Request('http://localhost/api/notebooks', {
                 method: 'POST',
-                body: JSON.stringify({ name: '物理' }),
+                body: JSON.stringify({ name: '物理', stage: 'junior_high', subjectKey: 'physics' }),
                 headers: { 'Content-Type': 'application/json' },
             });
 
@@ -123,6 +125,51 @@ describe('/api/notebooks', () => {
             expect(response.status).toBe(201);
             expect(data.name).toBe('物理');
             expect(data._count.errorItems).toBe(0);
+        });
+
+        it('学段和学科写入新错题本', async () => {
+            mocks.mockPrismaSubject.findUnique.mockResolvedValue(null);
+            mocks.mockPrismaSubject.create.mockResolvedValue({ id: 'nb-new', name: '奥数', _count: { errorItems: 0 } });
+
+            const response = await POST(new Request('http://localhost/api/notebooks', {
+                method: 'POST',
+                body: JSON.stringify({ name: '奥数', stage: 'primary', subjectKey: 'math' }),
+            }));
+
+            expect(response.status).toBe(201);
+            expect(mocks.mockPrismaSubject.create.mock.calls[0][0].data).toMatchObject({ name: '奥数', stage: 'primary', subjectKey: 'math' });
+        });
+
+        it('允许创建小学语文错题本并保存学段与学科', async () => {
+            const notebook = { id: 'nb-chinese', name: '小学语文', stage: 'primary', subjectKey: 'chinese', _count: { errorItems: 0 } };
+            mocks.mockPrismaSubject.findUnique.mockResolvedValue(null);
+            mocks.mockPrismaSubject.create.mockResolvedValue(notebook);
+
+            const response = await POST(new Request('http://localhost/api/notebooks', {
+                method: 'POST',
+                body: JSON.stringify({ name: '小学语文', stage: 'primary', subjectKey: 'chinese' }),
+            }));
+
+            expect(response.status).toBe(201);
+            expect(await response.json()).toMatchObject(notebook);
+            expect(mocks.mockPrismaSubject.create).toHaveBeenCalledWith(expect.objectContaining({
+                data: expect.objectContaining({ name: '小学语文', stage: 'primary', subjectKey: 'chinese', userId: mockUser.id }),
+            }));
+        });
+
+        it('缺少学段或学科、取值非法或组合不可选时返回 400', async () => {
+            for (const body of [
+                { name: '数学' },
+                { name: '数学', stage: 'primary' },
+                { name: '数学', subjectKey: 'math' },
+                { name: '数学', stage: 'university', subjectKey: 'math' },
+                { name: '数学', stage: 'primary', subjectKey: 'music' },
+                { name: '物理', stage: 'primary', subjectKey: 'physics' }, // 小学没有物理知识点
+            ]) {
+                const response = await POST(new Request('http://localhost/api/notebooks', { method: 'POST', body: JSON.stringify(body) }));
+                expect(response.status).toBe(400);
+            }
+            expect(mocks.mockPrismaSubject.create).not.toHaveBeenCalled();
         });
 
         it('应该拒绝创建空名称的错题本', async () => {
@@ -163,7 +210,7 @@ describe('/api/notebooks', () => {
 
             const request = new Request('http://localhost/api/notebooks', {
                 method: 'POST',
-                body: JSON.stringify({ name: '数学' }),
+                body: JSON.stringify({ name: '数学', stage: 'junior_high', subjectKey: 'math' }),
                 headers: { 'Content-Type': 'application/json' },
             });
 
@@ -185,7 +232,7 @@ describe('/api/notebooks', () => {
 
             const request = new Request('http://localhost/api/notebooks', {
                 method: 'POST',
-                body: JSON.stringify({ name: '  化学  ' }),
+                body: JSON.stringify({ name: '  化学  ', stage: 'junior_high', subjectKey: 'chemistry' }),
                 headers: { 'Content-Type': 'application/json' },
             });
 
@@ -260,14 +307,16 @@ describe('/api/notebooks', () => {
 
             const request = new Request('http://localhost/api/notebooks/nb-1', {
                 method: 'PUT',
-                body: JSON.stringify({ name: '高等数学' }),
+                // 学段和学科只能在创建时设置，更新时忽略
+                body: JSON.stringify({ name: '高等数学', stage: 'senior_high', subjectKey: 'physics' }),
                 headers: { 'Content-Type': 'application/json' },
             });
 
             const response = await PUT(request, { params: Promise.resolve({ id: 'nb-1' }) });
             const data = await response.json();
 
-            expect(response.status).toBe(200);
+expect(response.status).toBe(200);
+            expect(mocks.mockPrismaSubject.update.mock.calls[0][0].data).toEqual({ name: '高等数学' });
             expect(data.name).toBe('高等数学');
         });
 

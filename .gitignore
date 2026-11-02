@@ -47,6 +47,9 @@ next-env.d.ts
 
 # App config (contains secrets)
 /config/app-config.json
+/config/minimax-code.json
+/config/background-tasks.json
+/config/tts-cache/
 dist-scripts
 
 # Playwright
@@ -69,3 +72,11 @@ upload_test_output*.txt
 # data
 /data/
 .next-prebuilt/
+
+# Deployment script checks
+__pycache__/
+*.pyc
+
+# 安装包构建产物
+/dist/
+scripts/data/

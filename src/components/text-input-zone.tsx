@@ -34,18 +34,18 @@ export function TextInputZone({ onSubmit, isAnalyzing, defaultNotebookName }: Te
     };
 
     return (
-        <Card className="border-dashed border-2 hover:border-primary/30 transition-colors">
+        <Card className="rounded-2xl">
             <CardContent className="p-6 space-y-4">
                 <div className="flex items-center gap-2 text-muted-foreground mb-2">
                     <PenLine className="h-5 w-5" />
                     <span className="text-sm font-medium">
-                        {t.app?.textInputHint || "手动输入题目文本"}
+                        {t.app?.textInputHint || "Enter question text"}
                     </span>
                 </div>
 
                 <div className="space-y-2">
                     <Label htmlFor="question-text">
-                        {t.editor?.question || "题目内容"}
+                        {t.editor?.question || "Question Text"}
                     </Label>
                     <Textarea
                         id="question-text"
@@ -54,7 +54,7 @@ export function TextInputZone({ onSubmit, isAnalyzing, defaultNotebookName }: Te
                         onKeyDown={handleKeyDown}
                         placeholder={
                             t.app?.textInputPlaceholder ||
-                            "在此粘贴或输入题目文本...\n支持 Markdown 和 LaTeX 公式（如 $x^2 + y^2 = 1$）\n\nCtrl+Enter 快捷提交"
+                            "Paste or type question text here...\nSupports Markdown and LaTeX formulas (e.g. $x^2 + y^2 = 1$)\n\nCtrl+Enter to submit"
                         }
                         className="min-h-[200px] font-mono text-sm resize-y"
                         disabled={isAnalyzing}
@@ -63,31 +63,31 @@ export function TextInputZone({ onSubmit, isAnalyzing, defaultNotebookName }: Te
 
                 {defaultNotebookName && (
                     <p className="text-xs text-muted-foreground">
-                        {t.notebooks?.title || "错题本"}: {defaultNotebookName}
+                        {t.notebooks?.title || "My Notebooks"}: {defaultNotebookName}
                     </p>
                 )}
 
                 <Button
                     onClick={handleSubmit}
                     disabled={!questionText.trim() || isAnalyzing}
-                    className="w-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-medium"
+                    className="w-full bg-gradient-to-r from-indigo-600 to-violet-500 font-medium text-white hover:from-indigo-700 hover:to-violet-600"
                     size="lg"
                 >
                     {isAnalyzing ? (
                         <>
                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            {t.editor?.reanswering || "AI 解题中..."}
+                            {t.editor?.reanswering || "AI solving..."}
                         </>
                     ) : (
                         <>
                             <Sparkles className="mr-2 h-4 w-4" />
-                            {t.app?.aiSolve || "AI 解题"}
+                            {t.app?.aiSolve || "AI Solve"}
                         </>
                     )}
                 </Button>
 
                 <p className="text-xs text-muted-foreground text-center">
-                    {t.app?.textInputTip || "输入题目后，AI 将自动解答并生成解析"}
+                    {t.app?.textInputTip || "After entering the question, AI will automatically solve and generate analysis"}
                 </p>
             </CardContent>
         </Card>

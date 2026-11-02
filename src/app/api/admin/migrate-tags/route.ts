@@ -16,6 +16,12 @@ import {
 } from "@/lib/tag-data";
 import { createLogger } from "@/lib/logger";
 import { findParentTagIdForGrade } from "@/lib/tag-recognition";
+import type { Prisma } from "@prisma/client";
+
+/** 数学：年级 → 章 → 节 → 知识点 */
+type SectionedCurriculum = Record<string, Array<{ chapter: string; sections: Array<{ section: string; tags: string[] }> }>>;
+/** 其他学科：年级 → 章 → 知识点 */
+type ChapterCurriculum = Record<string, Array<{ chapter: string; tags: string[] }>>;
 
 const logger = createLogger('api:admin:migrate-tags');
 
@@ -26,14 +32,14 @@ interface TagAssociation {
     subject: string;
 }
 
-export async function POST(req: Request) {
+export async function POST() {
     const session = await getServerSession(authOptions);
 
     if (!session || !session.user) {
         return unauthorized();
     }
 
-    if ((session.user as any).role !== 'admin') {
+    if (session.user.role !== 'admin') {
         return forbidden("Admin access required for tag migration");
     }
 
@@ -129,7 +135,7 @@ export async function POST(req: Request) {
 
                 for (const assoc of itemAssociations) {
                     // 按名称+学科查找新标签
-                    let newTag = await tx.knowledgeTag.findFirst({
+                    const newTag = await tx.knowledgeTag.findFirst({
                         where: {
                             name: assoc.tagName,
                             subject: assoc.subject,
@@ -230,9 +236,9 @@ export async function POST(req: Request) {
     }
 }
 
-async function seedMath(tx: any, curriculum: any, gradeOrder: any) {
+async function seedMath(tx: Prisma.TransactionClient, curriculum: SectionedCurriculum, gradeOrder: Record<string, number>) {
     let count = 0;
-    for (const [gradeSemester, chapters] of Object.entries(curriculum) as any) {
+    for (const [gradeSemester, chapters] of Object.entries(curriculum)) {
         const gradeNode = await tx.knowledgeTag.create({
             data: {
                 name: gradeSemester,
@@ -289,9 +295,9 @@ async function seedMath(tx: any, curriculum: any, gradeOrder: any) {
     return count;
 }
 
-async function seedStandardSubject(tx: any, subject: string, curriculum: any, gradeOrder: any) {
+async function seedStandardSubject(tx: Prisma.TransactionClient, subject: string, curriculum: ChapterCurriculum, gradeOrder: Record<string, number>) {
     let count = 0;
-    for (const [gradeSemester, chapters] of Object.entries(curriculum) as any) {
+    for (const [gradeSemester, chapters] of Object.entries(curriculum)) {
         const gradeNode = await tx.knowledgeTag.create({
             data: {
                 name: gradeSemester,

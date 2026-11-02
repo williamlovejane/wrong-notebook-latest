@@ -1,17 +1,18 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './support/fixtures';
+import { acceptConfirmDialog, ADMIN_PASSWORD } from './helpers';
 
 test.describe('Authentication Flow', () => {
 
-    test('Registration and fallback Login', async ({ page }) => {
+    test('Registration and fallback Login', async ({ page, scenario }) => {
         // 增加测试超时时间
         test.setTimeout(60000);
 
         const user = {
-            name: 'jason',
-            email: 'jason@qq.com',
+            name: `jason-${scenario.id}`,
+            email: `auth-${scenario.id}@example.test`,
             password: '123456',
             stage: 'junior_high',
-            year: '2024' // 使用当前年份确保有效
+            year: String(new Date().getFullYear() - 2) // 使用相对年份，避免长期运行后样本失效。
         };
 
         // --- Try Registration ---
@@ -51,7 +52,7 @@ test.describe('Authentication Flow', () => {
                 console.log('Registration error visible, going to login.');
                 await page.goto('/login');
             }
-        } catch (e) {
+        } catch {
             if (page.url().includes('/login')) {
                 console.log('Redirected to login page automatically.');
             } else {
@@ -82,7 +83,7 @@ test.describe('Authentication Flow', () => {
 
         // --- Login as Admin ---
         await page.locator('input[name="email"]').fill('admin@localhost');
-        await page.locator('input[name="password"]').fill('123456');
+        await page.locator('input[name="password"]').fill(ADMIN_PASSWORD);
         await page.locator('button[type="submit"]').click();
 
         // Verify Admin Login and Home Page
@@ -99,7 +100,6 @@ test.describe('Authentication Flow', () => {
         await page.getByRole('tab', { name: /User Management|用户管理/ }).click();
 
         // 等待用户列表加载
-        await page.waitForTimeout(1000);
 
         // --- Delete User 'jason' ---
         // Find row with 'jason@qq.com'
@@ -108,15 +108,12 @@ test.describe('Authentication Flow', () => {
         // 使用更长的超时时间等待用户行出现
         await expect(userRow).toBeVisible({ timeout: 10000 });
 
-        // Setup dialog handler for delete confirmation
-        page.once('dialog', async dialog => {
-            console.log(`Delete User Dialog: ${dialog.message()}`);
-            await dialog.accept();
-        });
-
         // Click Delete button in that row (Trash icon)
         // The button has title "Delete" or "删除"
         await userRow.getByRole('button', { name: /Delete|删除/ }).click();
+
+        // 删除确认为页面内确认框
+        await acceptConfirmDialog(page);
 
         // Verify user is gone
         await expect(page.locator('tr').filter({ hasText: user.email })).not.toBeVisible({ timeout: 5000 });

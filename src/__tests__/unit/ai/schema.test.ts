@@ -4,7 +4,7 @@
  * 测试 Zod 验证 schema，特别是新增的错因分析字段
  */
 import { describe, it, expect } from 'vitest';
-import { ParsedQuestionSchema, safeParseParsedQuestion } from '@/lib/ai/schema';
+import { ParsedQuestionSchema, safeParseParsedQuestion, parseMasteryEvaluation, extractJsonObject, normalizeSubject, parseTagSuggestion, parseDifficultyStars, stripThinkingTags } from '@/lib/ai/schema';
 
 describe('ParsedQuestionSchema 验证', () => {
     const validBaseQuestion = {
@@ -146,5 +146,62 @@ describe('ParsedQuestionSchema 验证', () => {
             });
             expect(result.success).toBe(false);
         });
+    });
+});
+
+describe('掌握概率解析与学科规范化', () => {
+    it('兼容代码块和前后多余文字，并过滤推理模型的思考块', () => {
+        expect(extractJsonObject('结果：```json\n{"a": 1}\n```')).toEqual({ a: 1 });
+        expect(extractJsonObject('<think>{"a": 999}</think>{"a": 1}')).toEqual({ a: 1 });
+        expect(stripThinkingTags('<thinking>先草稿演算\n<question_text>伪题干</question_text></thinking><question_text>真题干</question_text>')).toBe('<question_text>真题干</question_text>');
+        expect(parseMasteryEvaluation('好的 {"probability": "64", "reason": "一般"} 以上')).toEqual({ probability: 0.64, reason: '一般' });
+    });
+
+    it('缺少理由或概率越界时报错', () => {
+        expect(() => parseMasteryEvaluation('{"probability": 50}')).toThrow();
+        expect(() => parseMasteryEvaluation('{"probability": -1, "reason": "x"}')).toThrow();
+    });
+
+    it('只接受预设学科', () => {
+        expect(normalizeSubject(' 物理 ')).toBe('物理');
+        expect(normalizeSubject('天文')).toBeUndefined();
+        expect(normalizeSubject(null)).toBeUndefined();
+    });
+});
+
+describe('知识点选取结果解析', () => {
+    const allowed = ['植树问题', '鸡兔同笼', '相遇问题', '追及问题', '年龄问题', '周期问题初步'];
+
+    it('只保留清单内的标签，去重并限制 5 个', () => {
+        const text = '{"tags": [" 植树问题", "自创知识点", "植树问题", "鸡兔同笼", "相遇问题", "追及问题", "年龄问题", "周期问题初步"]}';
+        expect(parseTagSuggestion(text, allowed).tags).toEqual(['植树问题', '鸡兔同笼', '相遇问题', '追及问题', '年龄问题']);
+    });
+
+    it('格式不正确时报错', () => {
+        expect(() => parseTagSuggestion('{"tag": "植树问题"}', allowed)).toThrow();
+    });
+});
+
+describe('parseDifficultyStars', () => {
+    it.each([
+        [3, 3], ['4', 4], [' 2 星 ', 2], ['★★★', 3], ['⭐⭐⭐⭐⭐', 5], ['3.4', 3], [4.6, 5],
+    ])('识别 %j 为 %i 星', (input, expected) => {
+        expect(parseDifficultyStars(input)).toBe(expected);
+    });
+
+    it.each([[0], [6], ['七星'], [''], [null], [undefined], [Number.NaN], [{}]])('无法识别或越界的 %j 返回 null', (input) => {
+        expect(parseDifficultyStars(input)).toBeNull();
+    });
+
+    it('知识点建议同时解析难度星级，缺失时为 null', () => {
+        expect(parseTagSuggestion('{"tags": ["植树问题"], "difficultyStars": 4}', ['植树问题'])).toEqual({ tags: ['植树问题'], difficultyStars: 4 });
+        expect(parseTagSuggestion('{"tags": ["植树问题"]}', ['植树问题']).difficultyStars).toBeNull();
+    });
+
+    it('题目结构允许 1~5 的整数或空，不允许越界', () => {
+        const base = { questionText: 'q', answerText: 'a', analysis: 'x', subject: '数学', knowledgePoints: [] };
+        expect(ParsedQuestionSchema.safeParse({ ...base, difficultyStars: 3 }).success).toBe(true);
+        expect(ParsedQuestionSchema.safeParse({ ...base, difficultyStars: null }).success).toBe(true);
+        expect(ParsedQuestionSchema.safeParse({ ...base, difficultyStars: 6 }).success).toBe(false);
     });
 });

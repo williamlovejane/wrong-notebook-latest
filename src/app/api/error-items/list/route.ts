@@ -5,7 +5,12 @@ import { authOptions } from "@/lib/auth";
 import { getServerSession } from "next-auth";
 import { unauthorized, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
+import { getAppTimeZone } from "@/lib/config";
+import { shiftCalendarDate } from "@/lib/date-time";
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE } from "@/lib/constants/pagination";
+import { isShortId } from "@/lib/short-id";
+import { isMasteryStatus, masteryStatusOf, masteryStatusWhere } from "@/lib/mastery-status";
+import { ERROR_ITEM_LIST_SELECT, ERROR_ITEM_PRINT_SELECT } from "@/lib/error-list-select";
 
 const logger = createLogger('api:error-items:list');
 
@@ -56,24 +61,26 @@ export async function GET(req: Request) {
                     { wrongAnswerText: { contains: query } },
                     { mistakeAnalysis: { contains: query } },
                     { knowledgePoints: { contains: query } },
+                    ...(isShortId(query.trim()) ? [{ shortId: query.trim() }] : []),
                 ]
             });
         }
 
-        // Mastery filter
-        if (mastery !== null) {
-            whereClause.masteryLevel = mastery === "1" ? { gt: 0 } : 0;
+        // 复习状态筛选：new 待复习 / reviewing 复习中 / mastered 已掌握
+        if (isMasteryStatus(mastery)) {
+            andConditions.push(masteryStatusWhere(mastery, user.masteryThreshold));
         }
 
         // Time range filter
         if (timeRange && timeRange !== "all") {
             const now = new Date();
-            const startDate = new Date();
+            const timeZone = getAppTimeZone();
+            let startDate = now;
 
             if (timeRange === "week") {
-                startDate.setDate(now.getDate() - 7);
+                startDate = shiftCalendarDate(now, timeZone, -7);
             } else if (timeRange === "month") {
-                startDate.setMonth(now.getMonth() - 1);
+                startDate = shiftCalendarDate(now, timeZone, 0, -1);
             }
 
             whereClause.createdAt = {
@@ -102,11 +109,15 @@ export async function GET(req: Request) {
 
         // Tag filter (第三级筛选：具体知识点)
         if (tag && !chapter) {
-            // 只有在没有 chapter 筛选时才按 tag 过滤
-            // 因为 chapter 筛选已经更精确了
-            whereClause.knowledgePoints = {
-                contains: tag,
-            };
+            // 按标签名精确匹配。knowledgePoints 是 JSON 数组字符串，
+            // 只能带引号匹配完整元素，否则筛「函数」会把「二次函数」也筛出来；
+            // 保留它是为了兼容尚未迁移到 tags 关系的旧错题。
+            andConditions.push({
+                OR: [
+                    { tags: { some: { name: tag } } },
+                    { knowledgePoints: { contains: JSON.stringify(tag) } },
+                ],
+            });
         } else if (tag && chapter) {
             // 如果同时有 chapter 和 tag，优先用 tag 进一步过滤
             // 覆盖 chapter 的条件
@@ -147,10 +158,7 @@ export async function GET(req: Request) {
         const errorItems = await prisma.errorItem.findMany({
             where: whereClause,
             orderBy: { createdAt: "desc" },
-            include: {
-                subject: true,
-                tags: true,
-            },
+            select: searchParams.get("view") === "print" ? ERROR_ITEM_PRINT_SELECT : ERROR_ITEM_LIST_SELECT,
             skip: (page - 1) * pageSize,
             take: pageSize,
         });
@@ -158,7 +166,10 @@ export async function GET(req: Request) {
         const totalPages = Math.ceil(total / pageSize);
 
         return NextResponse.json({
-            items: errorItems,
+            items: errorItems.map(({ _count, ...item }) => ({
+                ...item,
+                masteryStatus: masteryStatusOf(_count.practiceRecords, item.masteryProbability, user.masteryThreshold),
+            })),
             total,
             page,
             pageSize,

@@ -7,6 +7,10 @@ import {
     generateAnalyzePrompt,
     generateSimilarQuestionPrompt,
     generateReanswerPrompt,
+    generateMasteryPrompt,
+    generateGradingPrompt,
+    generateTagSuggestPrompt,
+    generateFigurePrompt,
     generateGradeInstruction,
     gradeSemesterToDisplayName,
     gradeSemesterToGradeNumber,
@@ -35,6 +39,31 @@ describe('AI Prompts', () => {
     });
 
     describe('generateAnalyzePrompt', () => {
+        it('要求判断是否有配图并用 SVG 重绘', () => {
+            const prompt = generateAnalyzePrompt('zh', 7, '数学');
+            expect(prompt).toContain('<has_figure>');
+            expect(prompt).toContain('<figure_svg>');
+            expect(prompt).toContain('13 个 XML 标签');
+            expect(prompt).toContain('严禁使用 <image>、<script>');
+        });
+
+        it('单独重绘配图的提示词带上题干用于核对标注', () => {
+            const prompt = generateFigurePrompt('如图，AB=3');
+            expect(prompt).toContain('如图，AB=3');
+            expect(prompt).toContain('<figure_svg>');
+            expect(generateFigurePrompt(null)).toContain('（无题目文字）');
+        });
+
+        it('提供错题本候选知识点时只列出这些标签，不再按学科、年级取标签', () => {
+            const prompt = generateAnalyzePrompt('zh', 4, '数学', {
+                candidateTags: { subjectName: '数学', tags: ['鸡兔同笼', '植树问题'] },
+                prefetchedMathTags: ['不应出现的年级标签'],
+            });
+            expect(prompt).toContain('**数学标签:**');
+            expect(prompt).toContain('"鸡兔同笼", "植树问题"');
+            expect(prompt).not.toContain('不应出现的年级标签');
+        });
+
         it('应该生成中文提示词', () => {
             const prompt = generateAnalyzePrompt('zh');
             expect(prompt).toContain('中文');
@@ -94,7 +123,7 @@ describe('AI Prompts', () => {
             expect(prompt).not.toContain('{{provider_hints}}');
         });
 
-        it('应该要求 AI 输出错因分析相关 XML 标签', () => {
+        it('应该要求 AI 输出错因分析相关 XML 标签并过滤人的思考和草稿', () => {
             const prompt = generateAnalyzePrompt('zh', null, '数学');
             expect(prompt).toContain('<wrong_answer_text>');
             expect(prompt).toContain('<mistake_status>');
@@ -102,10 +131,24 @@ describe('AI Prompts', () => {
             expect(prompt).toContain('wrong_attempt');
             expect(prompt).toContain('not_attempted');
             expect(prompt).toContain('unknown');
+            expect(prompt).toContain('【过滤草稿与思考过程规则】');
+            expect(prompt).toContain('必须过滤掉图片中人的思考过程、手写草稿');
+            expect(prompt).not.toContain('草稿或错误答案，请尽量按原样摘录');
         });
     });
 
     describe('generateSimilarQuestionPrompt', () => {
+        it('原题有配图时附上原题 SVG，并要求按新题数据重新绘制', () => {
+            const svg = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1"/></svg>';
+            const prompt = generateSimilarQuestionPrompt('zh', '如图求面积', ['面积'], 'medium', { originalFigureSvg: svg });
+            expect(prompt).toContain('<figure_svg>');
+            expect(prompt).toContain(svg);
+            expect(prompt).toContain('重新绘制');
+            const noFigure = generateSimilarQuestionPrompt('zh', '1+1=?', ['加法'], 'medium');
+            expect(noFigure).toContain('原题没有配图');
+            expect(noFigure).not.toContain('{{figure_instruction}}');
+        });
+
         const originalQuestion = '已知 x + y = 5，求 x² + y² 的最小值';
         const knowledgePoints = ['一元二次方程', '最值问题'];
 
@@ -152,6 +195,14 @@ describe('AI Prompts', () => {
     });
 
     describe('generateReanswerPrompt', () => {
+        it('提供错题本候选知识点时要求只从中选择，否则不出现该约束', () => {
+            const withTags = generateReanswerPrompt('zh', '鸡兔同笼', '数学', { candidateTags: { subjectName: '数学', tags: ['鸡兔同笼'] } });
+            expect(withTags).toContain('只能从以下数学知识点中选择');
+            expect(withTags).toContain('"鸡兔同笼"');
+            expect(generateReanswerPrompt('zh', '鸡兔同笼', '数学')).not.toContain('只能从以下');
+            expect(generateReanswerPrompt('zh', '鸡兔同笼', '数学')).not.toContain('{{knowledge_points_rule}}');
+        });
+
         const questionText = '求解方程 2x + 3 = 7';
 
         it('应该生成中文重新解题提示词', () => {
@@ -193,11 +244,13 @@ describe('AI Prompts', () => {
             expect(prompt).toContain('重新判断');
         });
 
-        it('重新解题提示词不应允许无依据推断学生错因', () => {
+        it('重新解题提示词不应允许无依据推断学生错因，并要求过滤草稿和思考过程', () => {
             const prompt = generateReanswerPrompt('zh', questionText, '数学');
             expect(prompt).not.toContain('推断');
             expect(prompt).toContain('不要猜测');
             expect(prompt).toContain('当前图片中可见');
+            expect(prompt).toContain('【过滤草稿与思考过程规则】');
+            expect(prompt).not.toContain('草稿或错误答案，请尽量按原样摘录');
         });
     });
 
@@ -391,5 +444,87 @@ describe('AI Prompts', () => {
             expect(prompt).toContain('<analysis>');
             expect(prompt).toMatch(/<analysis>[\s\S]*表格处理规则[\s\S]*<\/analysis>/);
         });
+    });
+});
+
+describe('掌握概率与学科相关提示词', () => {
+    it('掌握概率提示词包含练习历史、知识点和规则参考值', () => {
+        const prompt = generateMasteryPrompt({
+            questionText: '求 x',
+            knowledgePoints: ['方程', '移项'],
+            mistakeStatus: 'not_attempted',
+            history: [
+                { date: '2026-10-01T08:00:00.000Z', difficulty: 'easy', result: 'wrong', source: 'practice' },
+                { date: '2026-10-05T08:00:00.000Z', difficulty: 'harder', result: 'correct', source: 'exam' },
+            ],
+            ruleProbability: 0.456,
+        });
+
+        expect(prompt).toContain('求 x');
+        expect(prompt).toContain('方程、移项');
+        expect(prompt).toContain('1. 2026-10-01｜难度：简单｜来源：单题练习｜结果：做错');
+        expect(prompt).toContain('2. 2026-10-05｜难度：挑战｜来源：试卷｜结果：做对');
+        expect(prompt).toContain('46%');
+        expect(prompt).toContain('【最初的错误情况】\n不会做');
+    });
+
+    it('重新解题提示词要求输出学科标签', () => {
+        const prompt = generateReanswerPrompt('zh', '1+1=?');
+        expect(prompt).toContain('<subject>');
+        expect(prompt).toContain('9 个 XML 标签');
+        expect(prompt).toContain('<difficulty_stars>');
+    });
+});
+
+describe('知识点重新标注提示词', () => {
+    it('包含题目、可选知识点和学生年级，不含超纲限制', () => {
+        const prompt = generateTagSuggestPrompt({
+            questionText: '鸡兔同笼，共 10 个头 28 条腿',
+            answerText: '鸡 6 兔 4',
+            subject: '数学',
+            allowedTags: ['鸡兔同笼', '植树问题'],
+            gradeSemester: '四年级上',
+        });
+
+        expect(prompt).toContain('鸡兔同笼，共 10 个头 28 条腿');
+        expect(prompt).toContain('"鸡兔同笼"、"植树问题"');
+        expect(prompt).toContain('【学生年级】');
+        expect(prompt).toContain('数学老师');
+        expect(prompt).not.toContain('禁止使用超纲知识');
+    });
+
+    it('题目与解答过程、学生作答、错因分析一并交给 AI', () => {
+        const prompt = generateTagSuggestPrompt({
+            questionText: '鸡兔同笼，共 10 个头 28 条腿',
+            answerText: '鸡 6 兔 4',
+            analysis: '假设全是鸡，则有 20 条腿，少 8 条，每只兔多 2 条腿，兔有 4 只',
+            wrongAnswerText: '鸡 4 兔 6',
+            mistakeAnalysis: '把鸡和兔的数量算反',
+            subject: '数学',
+            allowedTags: ['假设法解鸡兔同笼'],
+        });
+
+        expect(prompt).toContain('【解答过程】\n假设全是鸡，则有 20 条腿');
+        expect(prompt).toContain('【学生作答】\n鸡 4 兔 6');
+        expect(prompt).toContain('【错因分析】\n把鸡和兔的数量算反');
+        expect(prompt).not.toContain('{{');
+    });
+
+    it('缺少解答过程时以「（无）」占位', () => {
+        const prompt = generateTagSuggestPrompt({ questionText: '1+1=?', subject: '数学', allowedTags: ['加法'] });
+        expect(prompt).toContain('【解答过程】\n（无）');
+        expect(prompt).toContain('【学生作答】\n（无）');
+    });
+});
+
+
+describe('按题型判题', () => {
+    it('证明题检查论证，同时保留等价答案与其他正确解法', () => {
+        const prompt = generateGradingPrompt({ questionText: '证明两个底角相等', answerText: '两角相等', userAnswer: '两角相等' });
+        expect(prompt).toContain('只有结论而没有证明不能判对');
+        expect(prompt).toContain('接受正确的其他解法');
+        expect(prompt).toContain('核对答案是否等价');
+        expect(prompt).not.toContain('只看最终结论');
+        expect(prompt).toContain('【学生答案】\n两角相等');
     });
 });

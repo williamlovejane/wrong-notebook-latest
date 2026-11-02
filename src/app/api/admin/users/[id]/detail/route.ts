@@ -4,6 +4,8 @@ import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { requireAdmin } from "@/lib/auth-utils"
 import { forbidden, notFound, internalError } from "@/lib/api-errors"
+import { countByMasteryStatus } from "@/lib/mastery"
+import { PRACTICE_RECORD_COUNT, masteryStatusOf } from "@/lib/mastery-status"
 import { createLogger } from "@/lib/logger"
 
 const logger = createLogger('api:admin:users:id:detail')
@@ -32,6 +34,7 @@ export async function GET(
                 createdAt: true,
                 educationStage: true,
                 enrollmentYear: true,
+                masteryThreshold: true,
             }
         })
 
@@ -75,16 +78,7 @@ export async function GET(
         })
 
         // 掌握度分布
-        const masteryStats = await prisma.errorItem.groupBy({
-            by: ['masteryLevel'],
-            where: { userId: id },
-            _count: { id: true }
-        })
-        const masteryDistribution = {
-            new: masteryStats.find(m => m.masteryLevel === 0)?._count.id || 0,
-            reviewing: masteryStats.find(m => m.masteryLevel === 1)?._count.id || 0,
-            mastered: masteryStats.find(m => m.masteryLevel === 2)?._count.id || 0,
-        }
+        const masteryDistribution = await countByMasteryStatus({ userId: id })
 
         // 学科错题分布（按 subjectId 分组）
         const subjectErrorCounts = await prisma.errorItem.groupBy({
@@ -112,8 +106,9 @@ export async function GET(
                 id: true,
                 questionText: true,
                 ocrText: true,
-                masteryLevel: true,
+                masteryProbability: true,
                 createdAt: true,
+                _count: PRACTICE_RECORD_COUNT,
                 subject: {
                     select: { name: true }
                 }
@@ -139,7 +134,7 @@ export async function GET(
                 id: item.id,
                 questionText: item.questionText,
                 ocrText: item.ocrText,
-                masteryLevel: item.masteryLevel,
+                masteryStatus: masteryStatusOf(item._count.practiceRecords, item.masteryProbability, user.masteryThreshold),
                 createdAt: item.createdAt,
                 subject: item.subject,
             })),

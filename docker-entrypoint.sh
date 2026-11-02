@@ -10,6 +10,7 @@ VERSION_FILE="/app/data/.app_version"
 PRISMA_BIN="node /app/node_modules/prisma/build/index.js"
 SEED_ADMIN_SCRIPT="/app/dist-scripts/scripts/seed-admin.js"
 REBUILD_TAGS_SCRIPT="/app/dist-scripts/scripts/rebuild-system-tags.js"
+SEED_CHINESE_TAGS_SCRIPT="/app/dist-scripts/scripts/seed-chinese-primary.js"
 
 # Get current app version from package.json
 CURRENT_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
@@ -17,6 +18,8 @@ CURRENT_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || ech
 # Fix permissions for data and config directories
 chown -R nextjs:nodejs /app/data /app/config
 
+# Remember whether this is an existing installation before copying seed data.
+DB_ALREADY_EXISTS=false
 # Check if the persistent database exists
 if [ ! -s "$TARGET_DB" ]; then
     echo "[Entrypoint] Initializing database..."
@@ -33,6 +36,7 @@ if [ ! -s "$TARGET_DB" ]; then
         echo "[Entrypoint] Source database not found at $SOURCE_DB. Initializing with migrations."
     fi
 else
+    DB_ALREADY_EXISTS=true
     echo "[Entrypoint] Database already exists at $TARGET_DB."
 fi
 
@@ -44,28 +48,37 @@ fi
 
 # Run migrations to ensure DB schema is available and up to date.
 echo "[Entrypoint] Running database migrations to sync schema..."
-cd /app && $PRISMA_BIN migrate deploy --schema=./prisma/schema.prisma && {
-    echo "[Entrypoint] Migrations completed successfully."
-} || echo "[Entrypoint] Migration failed or no pending migrations."
+cd /app
+if ! $PRISMA_BIN migrate deploy --schema=./prisma/schema.prisma; then
+    echo "[Entrypoint] Database migration failed; refusing to start." >&2
+    exit 1
+fi
+echo "[Entrypoint] Migrations completed successfully."
 
-# Always run seed after migrations to ensure admin user has correct role/isActive
-# (migration may have reset role to default 'user' for existing installs)
-echo "[Entrypoint] Ensuring admin user exists with correct role..."
-cd /app && node "$SEED_ADMIN_SCRIPT" && {
-    echo "[Entrypoint] Admin seed completed successfully."
-} || echo "[Entrypoint] Admin seed failed (non-fatal, continuing...)."
+# Bootstrap new installations; deployments preserve existing account state.
+if [ "$DB_ALREADY_EXISTS" = "true" ] && [ "${PRESERVE_EXISTING_DATA:-false}" = "true" ]; then
+    echo "[Entrypoint] Preserving existing accounts; skipping admin seed."
+else
+    echo "[Entrypoint] Restoring admin role for the existing default admin, if any..."
+    node "$SEED_ADMIN_SCRIPT"
+fi
 touch "$SEED_MARKER" 2>/dev/null
 
 # Check if version changed - rebuild system tags automatically
 if [ "$PREVIOUS_VERSION" != "$CURRENT_VERSION" ]; then
     echo "[Entrypoint] Version upgrade detected: $PREVIOUS_VERSION -> $CURRENT_VERSION"
-    echo "[Entrypoint] Rebuilding system tags to sync with new version..."
-    cd /app && node "$REBUILD_TAGS_SCRIPT" && {
-        echo "[Entrypoint] System tags rebuilt successfully."
-    } || echo "[Entrypoint] Tag rebuild failed (non-fatal, continuing...)."
+    if [ "$DB_ALREADY_EXISTS" = "true" ] && [ "${PRESERVE_EXISTING_DATA:-false}" = "true" ]; then
+        echo "[Entrypoint] Preserving existing system tags and associations."
+    else
+        echo "[Entrypoint] Rebuilding system tags to sync with new version..."
+        node "$REBUILD_TAGS_SCRIPT"
+    fi
     # Update version marker
     echo "$CURRENT_VERSION" > "$VERSION_FILE"
 fi
+
+# 旧安装保留标签时也增量补齐语文课程，不重建已有标签或修改题目关联。
+node "$SEED_CHINESE_TAGS_SCRIPT"
 
 # HTTPS Setup
 CERT_DIR="/app/certs"

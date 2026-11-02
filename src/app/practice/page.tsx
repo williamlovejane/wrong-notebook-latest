@@ -1,19 +1,21 @@
 "use client";
 
-import { useState, Suspense, useEffect } from "react";
+import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import Link from "next/link";
+import { Loader2, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, RefreshCw, CheckCircle, Eye, Send, XCircle, ArrowLeft, House } from "lucide-react";
-import { ParsedQuestion } from "@/lib/ai/types";
-import { useLanguage } from "@/contexts/LanguageContext";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
-import { apiClient } from "@/lib/api-client";
-import { AppConfig } from "@/types/api";
-import { frontendLogger } from "@/lib/frontend-logger";
+import { PracticeResultCard } from "@/components/practice-result-card";
+import { QuestionFigure } from "@/components/question-figure";
+import { DifficultyPicker, DifficultySelect } from "@/components/practice/difficulty-picker";
+import { GenerateButton } from "@/components/practice/generate-button";
+import { PracticeFeedback } from "@/components/practice/practice-feedback";
+import { useLanguage } from "@/contexts/LanguageContext";
+import { usePageTitle } from "@/lib/page-title";
+import { usePracticeSession } from "@/lib/use-practice-session";
 
 export const dynamic = 'force-dynamic';
 
@@ -22,108 +24,9 @@ function PracticeContent() {
     const router = useRouter();
     const errorItemId = searchParams.get("id");
     const { t, language } = useLanguage();
-
-    const [question, setQuestion] = useState<ParsedQuestion | null>(null);
-    const [loading, setLoading] = useState(false);
-    const [showAnswer, setShowAnswer] = useState(false);
-    const [userAnswer, setUserAnswer] = useState("");
-    const [notes, setNotes] = useState("");
-    const [isSubmitted, setIsSubmitted] = useState(false);
-    const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
-    const [config, setConfig] = useState<AppConfig | null>(null);
-
-    useEffect(() => {
-        apiClient.get<AppConfig>("/api/settings")
-            .then(data => {
-                setConfig(data);
-                if (data.timeouts?.analyze) {
-                    frontendLogger.info('[Config]', 'Loaded timeout settings', {
-                        analyze: data.timeouts.analyze
-                    });
-                }
-            })
-            .catch(err => console.error(err));
-    }, []);
-
-    const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard" | "harder">("medium");
-
-    const [error, setError] = useState<string | null>(null);
-
-    const generateQuestion = async () => {
-        if (!errorItemId) return;
-
-        setLoading(true);
-        setError(null);
-        setUserAnswer("");
-        setNotes("");
-        setIsSubmitted(false);
-        setIsCorrect(null);
-        setShowAnswer(false);
-        try {
-            const timeout = config?.timeouts?.analyze || 180000;
-            frontendLogger.info('[Practice]', 'Generating question', {
-                timeout
-            });
-            const data = await apiClient.post<ParsedQuestion>("/api/practice/generate", {
-                errorItemId,
-                language,
-                difficulty
-            }, { timeout });
-            setQuestion(data);
-        } catch (error: any) {
-            console.error(error);
-            const msg = error.data?.message || "";
-
-            let errorMessage = t.practice.errors?.default || "Failed to generate";
-
-            if (msg.includes('AI_CONNECTION_FAILED')) {
-                errorMessage = t.errors?.aiConnectionFailed || errorMessage;
-            } else if (msg.includes('AI_RESPONSE_ERROR')) {
-                errorMessage = t.errors?.aiResponseError || errorMessage;
-            } else if (msg.includes('AI_AUTH_ERROR')) {
-                errorMessage = t.errors?.aiAuth || errorMessage;
-            } else if (msg.includes('AI_UNKNOWN_ERROR')) {
-                errorMessage = t.errors?.AI_UNKNOWN_ERROR || errorMessage;
-            }
-
-            setError(errorMessage);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const submitAnswer = () => {
-        if (!userAnswer.trim() || !question) return;
-
-        setIsSubmitted(true);
-
-        const normalize = (str: string) => str.trim().toLowerCase().replace(/[.,;!]/g, '');
-        const user = normalize(userAnswer);
-        const correct = normalize(question.answerText);
-
-        // Enhanced comparison logic
-        let isMatch = user === correct;
-
-        // Handle multiple choice (e.g. user enters "A" but answer is "A. some text")
-        if (!isMatch && /^[a-d]$/.test(user)) {
-            isMatch = correct.startsWith(user);
-        }
-
-        // Handle case where answer contains the user input (e.g. answer is "The answer is 5" and user enters "5")
-        if (!isMatch && correct.includes(user) && user.length > 1) {
-            isMatch = true;
-        }
-
-        setIsCorrect(isMatch);
-        setShowAnswer(true);
-
-        // Save practice record
-        apiClient.post("/api/practice/record", {
-            subject: question.subject || "Unknown",
-            difficulty,
-            isCorrect: isMatch
-        }).catch(err => console.error("Failed to save practice record:", err));
-    };
+    usePageTitle(t.practice.title);
+    const session = usePracticeSession(errorItemId);
+    const { question, loading } = session;
 
     if (!errorItemId) {
         return <div className="p-8 text-center">{t.practice.invalidRequest || "Invalid Request"}</div>;
@@ -134,13 +37,8 @@ function PracticeContent() {
             <div className="flex justify-between items-center mb-4">
                 <Button variant="ghost" onClick={() => router.back()}>
                     <ArrowLeft className="mr-2 h-4 w-4" />
-                    {t.common?.back || "返回"}
+                    {t.common?.back || "Back"}
                 </Button>
-                <Link href="/">
-                    <Button variant="ghost" size="icon">
-                        <House className="h-5 w-5" />
-                    </Button>
-                </Link>
             </div>
             <div className="text-center space-y-4">
                 <h1 className="text-3xl font-bold">{t.practice.title}</h1>
@@ -148,51 +46,23 @@ function PracticeContent() {
                     {t.practice.subtitle}
                 </p>
 
-                {error && (
-                    <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded relative" role="alert">
+                {session.error && (
+                    <div className="relative rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-destructive" role="alert">
                         <strong className="font-bold">{t.common?.error || "Error"}: </strong>
-                        <span className="block whitespace-pre-wrap"> {error}</span>
+                        <span className="block whitespace-pre-wrap"> {session.error}</span>
                     </div>
                 )}
 
-                {!question && (
-                    <div className="flex flex-col items-center gap-4">
-                        <div className="flex items-center gap-2 bg-muted/50 p-2 rounded-lg">
-                            <span className="text-sm font-medium text-muted-foreground">{t.practice.difficulty?.label || "Difficulty"}:</span>
-                            <div className="flex gap-1">
-                                {[
-                                    { value: "easy", label: t.practice.difficulty?.easy || "Easy", color: "bg-green-100 text-green-700 hover:bg-green-200" },
-                                    { value: "medium", label: t.practice.difficulty?.medium || "Medium", color: "bg-blue-100 text-blue-700 hover:bg-blue-200" },
-                                    { value: "hard", label: t.practice.difficulty?.hard || "Hard", color: "bg-orange-100 text-orange-700 hover:bg-orange-200" },
-                                    { value: "harder", label: t.practice.difficulty?.harder || "Challenge", color: "bg-red-100 text-red-700 hover:bg-red-200" }
-                                ].map((level) => (
-                                    <button
-                                        key={level.value}
-                                        onClick={() => setDifficulty(level.value as any)}
-                                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${difficulty === level.value
-                                            ? level.color.replace("bg-", "bg-opacity-100 bg-").replace("text-", "ring-2 ring-offset-1 ring-")
-                                            : "bg-transparent hover:bg-muted text-muted-foreground"
-                                            } ${difficulty === level.value ? level.color : ''}`}
-                                    >
-                                        {level.label}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
+                {session.loadingCached && !question && (
+                    <div className="flex justify-center">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    </div>
+                )}
 
-                        <Button size="lg" onClick={generateQuestion} disabled={loading}>
-                            {loading ? (
-                                <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    {t.practice.generating}
-                                </>
-                            ) : (
-                                <>
-                                    <RefreshCw className="mr-2 h-4 w-4" />
-                                    {t.practice.generate}
-                                </>
-                            )}
-                        </Button>
+                {!question && !session.loadingCached && (
+                    <div className="flex flex-col items-center gap-4">
+                        <DifficultyPicker value={session.difficulty} onChange={session.setDifficulty} />
+                        <GenerateButton loading={loading} onClick={session.generateQuestion} />
                     </div>
                 )}
             </div>
@@ -204,126 +74,67 @@ function PracticeContent() {
                             <CardTitle className="flex justify-between items-center">
                                 <span>{t.app.practiceProblem}</span>
                                 <div className="flex items-center gap-2">
-                                    <select
-                                        value={difficulty}
-                                        onChange={(e) => setDifficulty(e.target.value as any)}
-                                        className="h-8 text-xs border rounded px-2 bg-background"
-                                        disabled={loading}
-                                    >
-                                        <option value="easy">{t.practice.difficulty?.easy || "Easy"}</option>
-                                        <option value="medium">{t.practice.difficulty?.medium || "Medium"}</option>
-                                        <option value="hard">{t.practice.difficulty?.hard || "Hard"}</option>
-                                        <option value="harder">{t.practice.difficulty?.harder || "Challenge"}</option>
-                                    </select>
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={generateQuestion}
-                                        disabled={loading}
-                                    >
-                                        {loading ? (
-                                            <>
-                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                {t.practice.generating}
-                                            </>
-                                        ) : (
-                                            <>
-                                                <RefreshCw className="mr-2 h-4 w-4" />
-                                                {t.practice.regenerate}
-                                            </>
-                                        )}
-                                    </Button>
+                                    <DifficultySelect value={session.difficulty} onChange={session.setDifficulty} disabled={loading} />
+                                    <GenerateButton loading={loading} onClick={session.generateQuestion} regenerate />
                                 </div>
                             </CardTitle>
                         </CardHeader>
                         <CardContent>
+                            {session.generatedAt && (
+                                <p className="mb-3 text-xs text-muted-foreground">
+                                    {(t.practice.lastGeneratedAt || "Generated at {time}").replace("{time}", new Date(session.generatedAt).toLocaleString(language === "zh" ? "zh-CN" : "en-US"))}
+                                </p>
+                            )}
                             <MarkdownRenderer content={question.questionText} className="font-medium" />
+                            <QuestionFigure svg={question.figureSvg} />
                         </CardContent>
                     </Card>
 
-
-                    {/* Answer Input Section */}
                     <Card className="border-blue-200">
                         <CardHeader>
                             <CardTitle className="text-blue-600">
-                                {t.app.yourAnswer || "你的答案"}
+                                {t.app.yourAnswer || "Your Answer"}
                             </CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <Input
-                                placeholder={t.app.answerPlaceholder || "输入你的答案..."}
-                                value={userAnswer}
-                                onChange={(e) => setUserAnswer(e.target.value)}
-                                disabled={isSubmitted}
+                                placeholder={t.app.answerPlaceholder || "Enter your answer..."}
+                                value={session.userAnswer}
+                                onChange={(e) => session.setUserAnswer(e.target.value)}
+                                disabled={session.isSubmitted}
                                 className="text-lg"
                             />
                             <Textarea
-                                placeholder={t.app.notesPlaceholder || "记录解题思路（可选）..."}
-                                value={notes}
-                                onChange={(e) => setNotes(e.target.value)}
-                                disabled={isSubmitted}
+                                placeholder={t.app.notesPlaceholder || "Record your thinking process (optional)..."}
+                                value={session.notes}
+                                onChange={(e) => session.setNotes(e.target.value)}
+                                disabled={session.isSubmitted}
                                 rows={3}
                             />
                         </CardContent>
                     </Card>
 
-                    {/* Submit/Result Section */}
-                    {!isSubmitted ? (
-                        <div className="flex justify-center">
-                            <Button
-                                size="lg"
-                                onClick={submitAnswer}
-                                disabled={!userAnswer.trim()}
-                                className="w-full md:w-auto"
-                            >
-                                <Send className="mr-2 h-4 w-4" />
-                                {t.app.submitAnswer || "提交答案"}
-                            </Button>
-                        </div>
-                    ) : (
-                        <Card className={isCorrect ? "border-green-500 bg-green-50" : "border-red-500 bg-red-50"}>
-                            <CardContent className="pt-6">
-                                <div className="flex items-center gap-3 mb-4">
-                                    {isCorrect ? (
-                                        <>
-                                            <CheckCircle className="h-8 w-8 text-green-600" />
-                                            <div>
-                                                <h3 className="text-xl font-bold text-green-600">
-                                                    {t.practice.correct || "回答正确！"}
-                                                </h3>
-                                                <p className="text-green-700">
-                                                    {t.practice.correctMessage || "太棒了，继续保持！"}
-                                                </p>
-                                            </div>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <XCircle className="h-8 w-8 text-red-600" />
-                                            <div>
-                                                <h3 className="text-xl font-bold text-red-600">
-                                                    {t.practice.incorrect || "答案有误"}
-                                                </h3>
-                                                <p className="text-red-700">
-                                                    {t.practice.incorrectMessage || "再看看解析，加油！"}
-                                                </p>
-                                            </div>
-                                        </>
-                                    )}
-                                </div>
-                                {notes && (
-                                    <div className="mt-4 p-3 bg-white rounded-lg border">
-                                        <p className="text-sm font-medium text-gray-600 mb-1">
-                                            {t.practice.yourNotes || "你的笔记："}
-                                        </p>
-                                        <p className="text-gray-700 whitespace-pre-wrap">{notes}</p>
-                                    </div>
-                                )}
-                            </CardContent>
-                        </Card>
-                    )}
+                    <PracticeFeedback
+                        isSubmitted={session.isSubmitted}
+                        grading={session.grading}
+                        isCorrect={session.isCorrect}
+                        gradeFailed={session.gradeFailed}
+                        gradeReason={session.gradeReason}
+                        notes={session.notes}
+                        canSubmit={!!session.userAnswer.trim()}
+                        onSubmit={session.submitAnswer}
+                        onReveal={session.revealAnswer}
+                    />
 
-                    {showAnswer && (
+                    {session.showAnswer && (
                         <div className="space-y-6 animate-in fade-in slide-in-from-top-2">
+                            <PracticeResultCard
+                                key={session.questionVersion}
+                                errorItemId={errorItemId}
+                                suggested={session.suggestedResult}
+                                question={question}
+                                difficulty={session.generatedDifficulty}
+                            />
                             <Card className="bg-muted/50">
                                 <CardHeader>
                                     <CardTitle className="text-green-600">{t.practice.correctAnswer}</CardTitle>
@@ -332,7 +143,6 @@ function PracticeContent() {
                                     <MarkdownRenderer content={question.answerText} className="font-bold" />
                                 </CardContent>
                             </Card>
-
 
                             <Card>
                                 <CardHeader>
@@ -352,7 +162,7 @@ function PracticeContent() {
 
 export default function PracticePage() {
     return (
-        <main className="min-h-screen p-8 bg-background">
+        <main className="min-h-screen px-4 py-6 md:px-8 md:py-8">
             <Suspense fallback={
                 <div className="flex justify-center p-8">
                     <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />

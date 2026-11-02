@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
+import { compare } from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { createLogger } from "@/lib/logger";
+import { startBackgroundTask } from "@/lib/background-tasks";
+import type { BackgroundTaskHandle } from "@/lib/background-tasks";
 import { createErrorResponse, ErrorCode } from "@/lib/api-errors";
-import { calculateGrade } from "@/lib/grade-calculator";
+import { prepareImportGrade } from "@/lib/import-question-grade";
+import { needsQuestionGradeRecognition } from "@/lib/question-grade";
 import { inferSubjectFromName } from "@/lib/knowledge-tags";
 import { findParentTagIdForGrade } from "@/lib/tag-recognition";
-import { compare } from "bcryptjs";
+import { generateUniqueShortId } from "@/lib/short-id";
+import { scheduleMasteryEvaluation } from "@/lib/mastery";
+import { findDuplicateQuestion, recordDuplicateQuestion, runQuestionImportTransaction } from "@/lib/question-deduplication";
+import { parseDifficultyStars } from "@/lib/ai/schema";
+import { getDefaultPaperLevelGroupId, ensureDefaultPaperGroups } from "@/lib/paper-level";
+import { getErrorMessage } from "@/lib/error-message";
 
 const logger = createLogger('api:openclaw:batch-upload');
 
@@ -26,15 +35,19 @@ interface OpenclawResponse {
         questionText: string;
         answerText: string;
         analysis: string;
+        wrongAnswerText?: string;
+        mistakeAnalysis?: string;
         knowledgePoints: string[];
         subject?: string;
         errorType?: string;
         source?: string;
+        difficultyStars?: number | null;
+        gradeSemester?: string | null;
     };
     error?: string;
 }
 
-function validateImage(base64: string, filename: string): { valid: boolean; error?: string } {
+function validateImage(base64: string, filename: string, mimeType: string): { valid: boolean; error?: string } {
     if (!base64 || base64.length === 0) {
         return { valid: false, error: '图片数据为空' };
     }
@@ -42,6 +55,11 @@ function validateImage(base64: string, filename: string): { valid: boolean; erro
     const extension = filename.toLowerCase().substring(filename.lastIndexOf('.'));
     if (!ALLOWED_EXTENSIONS.includes(extension)) {
         return { valid: false, error: `不支持的图片格式: ${extension}，仅支持 JPG、PNG` };
+    }
+
+    // mimeType 会写入题目原图的 data URL，须与扩展名一样限定为 JPG、PNG
+    if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
+        return { valid: false, error: `不支持的图片类型: ${String(mimeType).slice(0, 50)}，仅支持 image/jpeg、image/png` };
     }
 
     const estimatedSize = (base64.length * 3) / 4;
@@ -86,10 +104,10 @@ async function callOpenclawAgent(imageBase64: string, mimeType: string, timeout:
 
         const data = await response.json() as OpenclawResponse;
         return data;
-    } catch (error: any) {
+    } catch (error) {
         clearTimeout(timeoutId);
         
-        if (error.name === 'AbortError') {
+        if (error instanceof Error && error.name === 'AbortError') {
             logger.error('Openclaw agent timeout');
             return {
                 success: false,
@@ -97,10 +115,10 @@ async function callOpenclawAgent(imageBase64: string, mimeType: string, timeout:
             };
         }
         
-        logger.error({ error: error?.message || String(error) }, 'Openclaw agent request failed');
+        logger.error({ error: getErrorMessage(error) }, 'Openclaw agent request failed');
         return {
             success: false,
-            error: `识别服务请求失败: ${error?.message || String(error)}`,
+            error: `识别服务请求失败: ${getErrorMessage(error)}`,
         };
     }
 }
@@ -110,86 +128,102 @@ async function createErrorItem(
     imageBase64: string,
     mimeType: string,
     parsedData: OpenclawResponse['data'],
+    finalGradeSemester: string | null,
     subjectId?: string
 ) {
     const { questionText, answerText, analysis, knowledgePoints, errorType, source } = parsedData || {};
+    const difficultyStars = parseDifficultyStars(parsedData?.difficultyStars);
 
-    const tagNames: string[] = Array.isArray(knowledgePoints) ? knowledgePoints : [];
-    const tagConnections: { id: string }[] = [];
+    const content = {
+        questionText,
+        answerText,
+        analysis,
+        wrongAnswerText: parsedData?.wrongAnswerText,
+        mistakeAnalysis: parsedData?.mistakeAnalysis,
+        originalImageUrl: `data:${mimeType};base64,${imageBase64}`,
+    };
+    const result = await runQuestionImportTransaction(async (tx) => {
+        const duplicate = await findDuplicateQuestion(tx, userId, content);
+        if (duplicate) return recordDuplicateQuestion(tx, userId, duplicate, content);
 
-    const subject = subjectId ? await prisma.subject.findUnique({ where: { id: subjectId } }) : null;
-    const subjectKey = subject ? inferSubjectFromName(subject.name) : null;
+        const tagNames: string[] = Array.isArray(knowledgePoints) ? knowledgePoints : [];
+        const tagConnections: { id: string }[] = [];
 
-    const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { educationStage: true, enrollmentYear: true }
-    });
+        const subject = subjectId ? await tx.subject.findUnique({ where: { id: subjectId } }) : null;
+        const subjectKey = subject ? inferSubjectFromName(subject.name) : null;
+        const notebookTagSet = subject?.tagSet || 'default';
 
-    let finalGradeSemester: string | null = null;
-    if (user?.educationStage && user?.enrollmentYear) {
-        finalGradeSemester = calculateGrade(user.educationStage, user.enrollmentYear);
-    }
-
-    for (const tagName of tagNames) {
-        try {
-            let tag = await prisma.knowledgeTag.findFirst({
-                where: {
-                    name: tagName,
-                    OR: [
-                        { isSystem: true },
-                        { userId: userId },
-                    ],
-                },
-            });
-
-            if (!tag) {
-                const parentId = finalGradeSemester && subjectKey 
-                    ? await findParentTagIdForGrade(finalGradeSemester, subjectKey)
-                    : null;
-
-                tag = await prisma.knowledgeTag.create({
-                    data: {
+        for (const tagName of tagNames) {
+            try {
+                let tag = await tx.knowledgeTag.findFirst({
+                    where: {
                         name: tagName,
-                        subject: subjectKey || 'other',
-                        isSystem: false,
-                        userId: userId,
-                        parentId: parentId || undefined,
+                        tagSet: notebookTagSet,
+                        OR: [
+                            { isSystem: true },
+                            { userId: userId },
+                        ],
                     },
                 });
+
+                if (!tag) {
+                    const parentId = finalGradeSemester && subjectKey
+                        ? await findParentTagIdForGrade(finalGradeSemester, subjectKey, tx, notebookTagSet)
+                        : null;
+
+                    tag = await tx.knowledgeTag.create({
+                        data: {
+                            name: tagName,
+                            subject: subjectKey || 'other',
+                            isSystem: false,
+                            userId: userId,
+                            parentId: parentId || undefined,
+                            tagSet: notebookTagSet,
+                        },
+                    });
+                }
+
+                tagConnections.push({ id: tag.id });
+            } catch (tagError) {
+                logger.error({ tagName, error: tagError }, 'Error processing tag');
             }
-
-            tagConnections.push({ id: tag.id });
-        } catch (tagError) {
-            logger.error({ tagName, error: tagError }, 'Error processing tag');
         }
-    }
 
-    const errorItem = await prisma.errorItem.create({
-        data: {
-            userId: userId,
-            subjectId: subjectId || undefined,
-            originalImageUrl: `data:${mimeType};base64,${imageBase64}`,
-            ocrText: questionText || null,
-            questionText: questionText || null,
-            answerText: answerText || null,
-            analysis: analysis || null,
-            knowledgePoints: JSON.stringify(tagNames),
-            gradeSemester: finalGradeSemester,
-            paperLevel: null,
-            errorType: errorType || null,
-            source: source || 'Openclaw',
-            masteryLevel: 0,
-            tags: {
-                connect: tagConnections,
+        // 事务内确保默认分组存在（并发安全），并解析默认卷别
+        await ensureDefaultPaperGroups(userId, tx);
+        const defaultPaperLevel = await getDefaultPaperLevelGroupId(userId, difficultyStars, tx);
+
+        const errorItem = await tx.errorItem.create({
+            data: {
+                shortId: await generateUniqueShortId(tx),
+                userId: userId,
+                subjectId: subjectId || undefined,
+                originalImageUrl: `data:${mimeType};base64,${imageBase64}`,
+                ocrText: questionText || null,
+                questionText: questionText || null,
+                answerText: answerText || null,
+                analysis: analysis || null,
+                knowledgePoints: JSON.stringify(tagNames),
+                gradeSemester: finalGradeSemester,
+                paperLevel: defaultPaperLevel,
+                difficultyStars,
+                errorType: errorType || null,
+                source: source || 'Openclaw',
+                masteryLevel: 0,
+                tags: {
+                    connect: tagConnections,
+                },
             },
-        },
-        include: {
-            tags: true,
-            subject: true,
-        },
-    });
+            include: {
+                tags: true,
+                subject: true,
+            },
+        });
 
-    return errorItem;
+        return errorItem;
+    });
+    if ('duplicate' in result && result.duplicate) scheduleMasteryEvaluation([result.id]);
+    return result;
 }
 
 export async function POST(req: Request) {
@@ -205,6 +239,7 @@ export async function POST(req: Request) {
     let user = null;
     let userEmail = null;
     let subjectId = null;
+    let task: BackgroundTaskHandle | null = null;
 
     try {
         const body = await req.json();
@@ -332,14 +367,24 @@ export async function POST(req: Request) {
             success: boolean;
             index: number;
             errorItemId?: string;
+            duplicate?: boolean;
+            mistakeRecorded?: boolean;
+            similarity?: number;
+            practiceRecordId?: string;
+            message?: string;
             error?: string;
         }> = [];
+        // 页面「后台任务」中显示识别进度
+        const currentTask = startBackgroundTask({ userId: dbUser.id, kind: 'batch_upload', total: images.length });
+        task = currentTask;
+        const reportProgress = () => currentTask.setProgress(results.length, images.length, results.filter(r => !r.success).length);
 
         for (let i = 0; i < images.length; i++) {
+            reportProgress();
             const imageData = images[i] as ImageData;
             const { base64, mimeType, filename } = imageData;
 
-            const validation = validateImage(base64, filename);
+            const validation = validateImage(base64, filename, mimeType);
             if (!validation.valid) {
                 logger.warn({ index: i, filename, error: validation.error }, 'Image validation failed');
                 results.push({
@@ -363,11 +408,23 @@ export async function POST(req: Request) {
             }
 
             try {
+                const gradeInput = {
+                    questionText: openclawResponse.data.questionText,
+                    recognizedGradeSemester: openclawResponse.data.gradeSemester,
+                };
+                const duplicateBeforeRecognition = needsQuestionGradeRecognition(dbUser, gradeInput)
+                    ? await findDuplicateQuestion(prisma, dbUser.id, gradeInput) : null;
+                const gradeResult = await prepareImportGrade(dbUser, gradeInput, duplicateBeforeRecognition !== null);
+                if (gradeResult.response) {
+                    results.push({ success: false, index: i, error: 'AI_DAILY_LIMIT_EXCEEDED' });
+                    continue;
+                }
                 const errorItem = await createErrorItem(
                     dbUser.id,
                     base64,
                     mimeType,
                     openclawResponse.data,
+                    gradeResult.gradeSemester,
                     subjectId
                 );
 
@@ -375,21 +432,31 @@ export async function POST(req: Request) {
                     success: true,
                     index: i,
                     errorItemId: errorItem.id,
+                    ...('duplicate' in errorItem ? {
+                        duplicate: errorItem.duplicate,
+                        mistakeRecorded: errorItem.mistakeRecorded,
+                        similarity: errorItem.similarity,
+                        practiceRecordId: errorItem.practiceRecordId,
+                        message: errorItem.message,
+                    } : {}),
                 });
 
                 logger.info({ index: i, errorItemId: errorItem.id }, 'Error item created successfully');
-            } catch (dbError: any) {
-                logger.error({ index: i, error: dbError?.message || String(dbError) }, 'Failed to create error item');
+            } catch (dbError) {
+                logger.error({ index: i, error: getErrorMessage(dbError) }, 'Failed to create error item');
                 results.push({
                     success: false,
                     index: i,
-                    error: `数据库写入失败: ${dbError?.message || String(dbError)}`,
+                    error: `导入失败: ${getErrorMessage(dbError)}`,
                 });
             }
         }
 
         const successCount = results.filter(r => r.success).length;
         const failCount = results.length - successCount;
+        reportProgress();
+        if (successCount === 0) currentTask.fail('ALL_FAILED');
+        else currentTask.succeed();
 
         logger.info({ 
             total: results.length, 
@@ -406,13 +473,15 @@ export async function POST(req: Request) {
             failCount,
             results,
         }, { status: statusCode });
-    } catch (error: any) {
-        logger.error({ error: error?.message || String(error), stack: error?.stack }, 'Batch upload error');
+    } catch (error) {
+        task?.fail(error);
+        const message = getErrorMessage(error);
+        logger.error({ error: message, stack: error instanceof Error ? error.stack : undefined }, 'Batch upload error');
         return createErrorResponse(
-            error?.message || '批量上传失败',
+            message || '批量上传失败',
             500,
             ErrorCode.INTERNAL_ERROR,
-            error?.message || String(error)
+            message
         );
     }
 }

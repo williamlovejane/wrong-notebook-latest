@@ -1,0 +1,58 @@
+name: Bug 报告 / Bug report
+description: 报告程序错误或异常行为 / Report a bug or unexpected behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先搜索是否已有相同的 Issue。安全漏洞请按 [SECURITY.md](https://github.com/margrop/wrong-notebook/blob/main/SECURITY.md) 私下报告。
+        请勿在日志或截图中包含 API Key、密码或访问地址。
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述 / Description
+      description: 发生了什么？期望的结果是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 看到 ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: 「设置 → 关于」或 /api/health 中的版本号
+      placeholder: "2026.10.22"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 部署方式 / Deployment
+      options:
+        - Docker
+        - npm
+        - Windows / macOS / Linux 桌面版
+        - 飞牛OS
+        - 源码 / Source
+        - 在线演示 / Demo
+    validations:
+      required: true
+  - type: input
+    id: ai
+    attributes:
+      label: AI 提供商与模型 / AI provider and model
+      placeholder: "MiniMax / MiniMax-M3.1-Flash"
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图 / Logs or screenshots
+      description: 已脱敏的服务端日志、浏览器控制台错误或截图。管理员可在「设置 → 用户管理」开启调试模式、复现后导出调试日志并拖入此处 / Redacted server logs, browser console errors or screenshots. Admins can turn on debug mode under Settings → User Management, reproduce the problem and drop the exported debug log here
+      render: text

@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { apiClient } from "@/lib/api-client";
+import { frontendLogger } from "@/lib/frontend-logger";
 import { TagSuggestionsResponse } from "@/types/api";
 
 interface TagInputProps {
@@ -26,16 +27,7 @@ export function TagInput({ value = [], onChange, placeholder = "Enter tags...", 
     const suggestionsRef = useRef<HTMLDivElement>(null);
 
     // 获取标签建议
-    useEffect(() => {
-        if (input.trim()) {
-            fetchSuggestions(input);
-        } else {
-            setSuggestions([]);
-            setShowSuggestions(false);
-        }
-    }, [input, subject, gradeStage]);
-
-    const fetchSuggestions = async (query: string) => {
+    const fetchSuggestions = useCallback(async (query: string) => {
         try {
             // 从服务器获取标签建议（现在从数据库查询）
             const params = new URLSearchParams({ q: query });
@@ -57,9 +49,17 @@ export function TagInput({ value = [], onChange, placeholder = "Enter tags...", 
             setShowSuggestions(filtered.length > 0);
             setSelectedIndex(0);
         } catch (error) {
-            console.error("Failed to fetch suggestions:", error);
+            frontendLogger.error('[TagInput]', 'Failed to fetch suggestions', { error });
         }
-    };
+    }, [subject, gradeStage, value]);
+
+    // 获取标签建议
+    useEffect(() => {
+        if (input.trim()) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面或条件变化时加载，请求前后更新加载状态和结果
+            fetchSuggestions(input);
+        }
+    }, [input, fetchSuggestions]);
 
     const addTag = (tag: string) => {
         if (tag.trim() && !value.includes(tag.trim())) {
@@ -135,7 +135,14 @@ export function TagInput({ value = [], onChange, placeholder = "Enter tags...", 
                     ref={inputRef}
                     type="text"
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
+                    onChange={(e) => {
+                        setInput(e.target.value);
+                        // 清空输入时同时收起建议
+                        if (!e.target.value.trim()) {
+                            setSuggestions([]);
+                            setShowSuggestions(false);
+                        }
+                    }}
                     onKeyDown={handleKeyDown}
                     onFocus={() => {
                         if (suggestions.length > 0) {

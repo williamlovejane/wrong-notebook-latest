@@ -1,3 +1,4 @@
+import { bootstrap } from 'global-agent';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 import { createLogger } from './logger';
 
@@ -36,23 +37,15 @@ export function setupGlobalProxy() {
 
         // 2. Configure legacy http/https modules using global-agent
         try {
-            // We set the environment variables that global-agent looks for
+            // global-agent 从 GLOBAL_AGENT_ 前缀的环境变量读取代理；
+            // 不要预先设置 global.GLOBAL_AGENT，否则 bootstrap 会认为已初始化而直接跳过
             if (targetHttpProxy) process.env.GLOBAL_AGENT_HTTP_PROXY = targetHttpProxy;
             if (targetHttpsProxy) process.env.GLOBAL_AGENT_HTTPS_PROXY = targetHttpsProxy;
 
-            // Also set the global config object which global-agent uses
-            // @ts-ignore
-            global.GLOBAL_AGENT = {
-                HTTP_PROXY: targetHttpProxy,
-                HTTPS_PROXY: targetHttpsProxy,
-            };
-
-            // Import bootstrap to patch http/https
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            require('global-agent/bootstrap');
+            bootstrap();
 
             if (process.env.NODE_ENV === 'development') {
-                logger.info('global-agent/bootstrap initialized');
+                logger.info('global-agent bootstrap initialized');
             }
         } catch (error) {
             logger.error({ error }, 'Failed to initialize global-agent');

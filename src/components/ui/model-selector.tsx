@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,20 +11,25 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import { RefreshCw, Loader2 } from "lucide-react";
+import { ExternalLink, RefreshCw, Loader2 } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
 import { AIModel, ModelsResponse } from "@/types/api";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { isVendorProvider, VENDOR_PRESETS } from "@/lib/ai/vendor-presets";
+import type { VendorProviderId } from "@/lib/ai/vendor-presets";
+import { frontendLogger } from "@/lib/frontend-logger";
 
 interface ModelSelectorProps {
-    provider: 'openai' | 'gemini';
+    provider: 'openai' | 'gemini' | 'anthropic' | VendorProviderId;
     apiKey?: string;
     baseUrl?: string;
     currentModel?: string;
     onModelChange: (model: string) => void;
+    /** 官方的模型列表文档，显示在字段名旁 */
+    docsHref?: string;
 }
 
-export function ModelSelector({ provider, apiKey, baseUrl, currentModel, onModelChange }: ModelSelectorProps) {
+export function ModelSelector({ provider, apiKey, baseUrl, currentModel, onModelChange, docsHref }: ModelSelectorProps) {
     const { t } = useLanguage();
     const [models, setModels] = useState<AIModel[]>([]);
     const [loading, setLoading] = useState(false);
@@ -32,10 +37,12 @@ export function ModelSelector({ provider, apiKey, baseUrl, currentModel, onModel
     const [customModel, setCustomModel] = useState(currentModel || '');
     const [useCustom, setUseCustom] = useState(false);
 
-    // 当外部 currentModel 变化时同步更新 customModel（用于实例切换）
-    useEffect(() => {
+    // 当外部 currentModel 变化时同步更新 customModel（用于实例切换），在渲染时比较
+    const [prevCurrentModel, setPrevCurrentModel] = useState(currentModel);
+    if (currentModel !== prevCurrentModel) {
+        setPrevCurrentModel(currentModel);
         setCustomModel(currentModel || '');
-    }, [currentModel]);
+    }
 
     const fetchModels = async () => {
         if (!apiKey) {
@@ -47,13 +54,11 @@ export function ModelSelector({ provider, apiKey, baseUrl, currentModel, onModel
         setError(null);
 
         try {
-            const params = new URLSearchParams({
+            const data = await apiClient.post<ModelsResponse>("/api/ai/models", {
                 provider,
                 apiKey,
                 ...(baseUrl && { baseUrl }),
             });
-
-            const data = await apiClient.get<ModelsResponse>(`/api/ai/models?${params}`);
 
             // Check if there's an error message in the response
             if ('error' in data && typeof data.error === 'string') {
@@ -69,9 +74,9 @@ export function ModelSelector({ provider, apiKey, baseUrl, currentModel, onModel
                 setError(t.modelSelector?.noVisionModel || "No vision model found, please enter manually");
                 setUseCustom(true);
             }
-        } catch (err: any) {
-            console.error("Failed to fetch models:", err);
-            const errorMsg = err?.message || (t.modelSelector?.fetchFailed || "Failed to fetch models");
+        } catch (err) {
+            frontendLogger.error('[ModelSelector]', 'Failed to fetch models', { error: err });
+            const errorMsg = (err instanceof Error && err.message) || (t.modelSelector?.fetchFailed || "Failed to fetch models");
             setError(errorMsg + (t.modelSelector?.enterManually || ", please enter manually"));
             setUseCustom(true);
         } finally {
@@ -98,6 +103,12 @@ export function ModelSelector({ provider, apiKey, baseUrl, currentModel, onModel
         <div className="space-y-2">
             <div className="flex items-center gap-2">
                 <Label className="flex-1">{t.modelSelector?.modelName || 'Model Name'}</Label>
+                {docsHref && (
+                    <a href={docsHref} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground underline">
+                        {t.settings.ai.docLinks.models}
+                        <ExternalLink className="h-3 w-3" />
+                    </a>
+                )}
                 <Button
                     type="button"
                     variant="outline"
@@ -122,7 +133,7 @@ export function ModelSelector({ provider, apiKey, baseUrl, currentModel, onModel
                     <Input
                         value={customModel}
                         onChange={(e) => handleCustomModelChange(e.target.value)}
-                        placeholder={provider === 'openai' ? "gpt-4o" : "gemini-1.5-flash"}
+                        placeholder={isVendorProvider(provider) ? VENDOR_PRESETS[provider].model : provider === 'openai' ? "gpt-6.1-sol" : "gemini-1.5-flash"}
                     />
                     {models.length > 0 && (
                         <Button

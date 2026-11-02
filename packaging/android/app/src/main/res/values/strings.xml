@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Wrong Notebook</string>
+    <string name="setup_title">Connect to server</string>
+    <string name="setup_description">Enter the address of your Wrong Notebook server (Docker, npm, desktop app or fnOS). The phone or tablet must be able to reach it.</string>
+    <string name="setup_hint">e.g. http://192.168.1.10:3000</string>
+    <string name="setup_connect">Connect</string>
+    <string name="setup_checking">Checking server…</string>
+    <string name="setup_invalid_url">Enter a valid http:// or https:// address</string>
+    <string name="setup_check_failed_title">Cannot verify server</string>
+    <string name="setup_check_failed_message">%1$s\n\nUse this address anyway?</string>
+    <string name="setup_not_wrong_notebook">The address responded, but it does not look like a Wrong Notebook server.</string>
+    <string name="setup_use_anyway">Use anyway</string>
+    <string name="cancel">Cancel</string>
+    <string name="error_title">Cannot reach the server</string>
+    <string name="error_retry">Retry</string>
+    <string name="error_change_server">Change server</string>
+    <string name="ssl_title">Untrusted certificate</string>
+    <string name="ssl_message">The certificate of %1$s is not trusted (it may be self-signed). Continue only if this is your own server.</string>
+    <string name="ssl_continue">Continue</string>
+    <string name="file_saved">Saved</string>
+    <string name="file_save_failed">Failed to save file</string>
+    <string name="no_app_for_action">No app can handle this action</string>
+    <string name="app_name_client">Wrong Notebook Client</string>
+    <string name="error_local_title">Wrong Notebook failed to start</string>
+    <string name="starting_unpack">Preparing for first launch or update…</string>
+    <string name="starting_server">Starting Wrong Notebook…</string>
+</resources>

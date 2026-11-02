@@ -1,0 +1,4 @@
+#!/bin/bash
+# 卸载前置：停止服务
+"$(dirname "$0")/main" stop >/dev/null 2>&1 || true
+exit 0

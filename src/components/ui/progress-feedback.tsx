@@ -3,30 +3,61 @@
 import { useState, useEffect } from "react";
 import { Loader2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
+import { useLanguage } from "@/contexts/LanguageContext";
 import { cn } from "@/lib/utils";
+import { useIsClient } from "@/lib/use-is-client";
 
 export type ProgressStatus = 'compressing' | 'uploading' | 'analyzing' | 'processing' | 'saving' | 'idle';
 
 interface ProgressFeedbackProps {
     status: ProgressStatus;
-    progress?: number;
     message?: string;
     className?: string;
 }
 
-import { useLanguage } from "@/contexts/LanguageContext";
+type ActiveProgressStatus = Exclude<ProgressStatus, 'idle'>;
+type ActiveProgressFeedbackProps = Omit<ProgressFeedbackProps, 'status'> & { status: ActiveProgressStatus };
 
-export function ProgressFeedback({ status, progress, message, className }: ProgressFeedbackProps) {
-    const { t } = useLanguage();
+// 按处理阶段估算整体流程位置，同一阶段内保持固定值。
+const STAGE_ESTIMATES: Record<ActiveProgressStatus, number> = {
+    compressing: 10,
+    uploading: 20,
+    analyzing: 50,
+    processing: 85,
+    saving: 95,
+};
+
+function formatElapsedTime(seconds: number): string {
+    const parts = [Math.floor(seconds / 60) % 60, seconds % 60];
+    if (seconds >= 3600) parts.unshift(Math.floor(seconds / 3600));
+    return parts.map((part) => String(part).padStart(2, '0')).join(':');
+}
+
+export function ProgressFeedback({ status, message, className }: ProgressFeedbackProps) {
     // 确保只在客户端挂载完成后才渲染遮罩层，防止 SSR/Hydration 问题
-    const [isMounted, setIsMounted] = useState(false);
-
-    useEffect(() => {
-        setIsMounted(true);
-    }, []);
+    const isMounted = useIsClient();
 
     // 只有在客户端挂载完成且 status 不为 idle 时才渲染
     if (!isMounted || status === 'idle') return null;
+
+    // 进入 idle 后卸载计时器，新任务重新挂载；切换阶段时保留本次任务的起点。
+    return <ActiveProgressFeedback status={status} message={message} className={className} />;
+}
+
+function ActiveProgressFeedback({ status, message, className }: ActiveProgressFeedbackProps) {
+    const { t } = useLanguage();
+    const [startedAt] = useState(() => Date.now());
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [startedAt]);
+
+    const progress = STAGE_ESTIMATES[status];
+    const estimateLabel = t.common.progress.estimated.replace('{percent}', String(progress));
 
     return (
         <div className={cn(
@@ -43,17 +74,17 @@ export function ProgressFeedback({ status, progress, message, className }: Progr
                     </div>
 
                     <div className="space-y-2 w-full">
-                        <h3 className="text-lg font-semibold tracking-tight">
-                            {message}
+                        <h3 className="text-lg font-semibold tracking-tight" aria-live="polite">
+                            {message || t.common.progress[status]}
                         </h3>
-                        {progress !== undefined && (
-                            <Progress value={progress} className="h-2 w-full" />
-                        )}
+                        <Progress value={progress} aria-label={estimateLabel} aria-valuetext={estimateLabel} className="h-2 w-full" />
                     </div>
 
-                    <p className="text-sm text-muted-foreground">
-                        {progress !== undefined ? `${Math.round(progress)}%` : (t.common.pleaseWait || 'Please wait...')}
-                    </p>
+                    <div className="flex w-full flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground tabular-nums">
+                        <span>{estimateLabel}</span>
+                        <span role="timer" aria-live="off">{t.common.progress.elapsed.replace('{time}', formatElapsedTime(elapsedSeconds))}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{t.common.progress.estimateHint}</p>
                 </div>
             </div>
         </div>

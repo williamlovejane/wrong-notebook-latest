@@ -4,7 +4,11 @@ import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { usePageTitle } from "@/lib/page-title";
+import { useTimeZone } from "@/contexts/TimeZoneContext";
+import { formatDateTime } from "@/lib/date-time";
 import { apiClient } from "@/lib/api-client";
+import { frontendLogger } from "@/lib/frontend-logger";
 import { Loader2, ArrowLeft, User, BookOpen, PenTool, Layers, Calendar, Tag, CheckCircle, Clock, AlertCircle, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,11 +16,13 @@ import { Badge } from "@/components/ui/badge";
 import { AdminUserDetail } from "@/types/api";
 
 export default function AdminUserDetailPage() {
+    const { timeZone } = useTimeZone()
     const { data: session, status } = useSession()
     const router = useRouter()
     const params = useParams()
     const { t } = useLanguage()
     const [data, setData] = useState<AdminUserDetail | null>(null)
+    usePageTitle(t.admin.dashboard.title, data?.user.name || data?.user.email)
     const [loading, setLoading] = useState(true)
 
     const userId = params.id as string
@@ -27,7 +33,7 @@ export default function AdminUserDetailPage() {
             const result = await apiClient.get<AdminUserDetail>(`/api/admin/users/${userId}/detail`)
             setData(result)
         } catch (error) {
-            console.error("Failed to fetch user detail", error)
+            frontendLogger.error('[AdminUserDetail]', 'Failed to fetch user detail', { error })
         } finally {
             setLoading(false)
         }
@@ -35,10 +41,11 @@ export default function AdminUserDetailPage() {
 
     useEffect(() => {
         if (status === "loading") return
-        if (!session?.user || (session.user as any).role !== "admin") {
+        if (!session?.user || session.user.role !== "admin") {
             router.push("/")
             return
         }
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面或条件变化时加载，请求前后更新加载状态和结果
         fetchData()
     }, [session, status, router, fetchData])
 
@@ -53,16 +60,16 @@ export default function AdminUserDetailPage() {
     if (!data) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
-                <p className="text-muted-foreground">{t.common?.error || "加载失败"}</p>
-                <Button onClick={fetchData}>重试</Button>
+                <p className="text-muted-foreground">{t.common?.error || "Error"}</p>
+                <Button onClick={fetchData}>{t.admin?.dashboard?.retry || "Retry"}</Button>
             </div>
         )
     }
 
     const masteryItems = [
-        { key: "new", label: t.admin?.dashboard?.masteryNew || "未掌握", count: data.masteryDistribution.new, icon: AlertCircle, color: "text-red-500" },
-        { key: "reviewing", label: t.admin?.dashboard?.masteryReviewing || "复习中", count: data.masteryDistribution.reviewing, icon: Clock, color: "text-yellow-500" },
-        { key: "mastered", label: t.admin?.dashboard?.masteryMastered || "已掌握", count: data.masteryDistribution.mastered, icon: CheckCircle, color: "text-green-500" },
+        { key: "new", label: t.admin?.dashboard?.masteryNew || "To Review", count: data.masteryDistribution.new, icon: AlertCircle, color: "text-red-500" },
+        { key: "reviewing", label: t.admin?.dashboard?.masteryReviewing || "Reviewing", count: data.masteryDistribution.reviewing, icon: Clock, color: "text-yellow-500" },
+        { key: "mastered", label: t.admin?.dashboard?.masteryMastered || "Mastered", count: data.masteryDistribution.mastered, icon: CheckCircle, color: "text-green-500" },
     ]
     const totalMastery = data.masteryDistribution.new + data.masteryDistribution.reviewing + data.masteryDistribution.mastered
 
@@ -72,7 +79,7 @@ export default function AdminUserDetailPage() {
             <div className="flex items-center gap-4">
                 <Button variant="ghost" size="sm" onClick={() => router.push("/admin")}>
                     <ArrowLeft className="h-4 w-4 mr-1" />
-                    {t.common?.back || "返回"}
+                    {t.common?.back || "Back"}
                 </Button>
                 <div className="flex items-center gap-3">
                     <div className="p-2 rounded-full bg-blue-50 dark:bg-blue-950/30">
@@ -83,10 +90,10 @@ export default function AdminUserDetailPage() {
                         <p className="text-sm text-muted-foreground">{data.user.email}</p>
                     </div>
                     {data.user.role === "admin" && (
-                        <Badge variant="default">{t.admin?.admin || "管理员"}</Badge>
+                        <Badge variant="default">{t.admin?.admin || "Admin"}</Badge>
                     )}
                     <Badge variant={data.user.isActive ? "default" : "destructive"}>
-                        {data.user.isActive ? (t.admin?.active || "启用") : (t.admin?.disabled || "禁用")}
+                        {data.user.isActive ? (t.admin?.active || "Active") : (t.admin?.disabled || "Disabled")}
                     </Badge>
                 </div>
             </div>
@@ -97,28 +104,28 @@ export default function AdminUserDetailPage() {
                     <CardContent className="p-4 text-center">
                         <Layers className="h-5 w-5 text-purple-500 mx-auto mb-1" />
                         <div className="text-2xl font-bold">{data.notebookCount}</div>
-                        <div className="text-xs text-muted-foreground">{t.admin?.dashboard?.notebooks || "错题本"}</div>
+                        <div className="text-xs text-muted-foreground">{t.admin?.dashboard?.notebooks || "Notebooks"}</div>
                     </CardContent>
                 </Card>
                 <Card className="border-0 shadow-sm">
                     <CardContent className="p-4 text-center">
                         <BookOpen className="h-5 w-5 text-red-500 mx-auto mb-1" />
                         <div className="text-2xl font-bold">{data.errorCount}</div>
-                        <div className="text-xs text-muted-foreground">{t.admin?.dashboard?.errors || "错题"}</div>
+                        <div className="text-xs text-muted-foreground">{t.admin?.dashboard?.errors || "Errors"}</div>
                     </CardContent>
                 </Card>
                 <Card className="border-0 shadow-sm">
                     <CardContent className="p-4 text-center">
                         <PenTool className="h-5 w-5 text-green-500 mx-auto mb-1" />
                         <div className="text-2xl font-bold">{data.practiceCount}</div>
-                        <div className="text-xs text-muted-foreground">{t.admin?.dashboard?.practice || "练习"}</div>
+                        <div className="text-xs text-muted-foreground">{t.admin?.dashboard?.practice || "Practice"}</div>
                     </CardContent>
                 </Card>
                 <Card className="border-0 shadow-sm">
                     <CardContent className="p-4 text-center">
                         <Calendar className="h-5 w-5 text-blue-500 mx-auto mb-1" />
                         <div className="text-2xl font-bold">{data.recent7DaysCount}</div>
-                        <div className="text-xs text-muted-foreground">{t.admin?.dashboard?.recent7Days || "近7天录入"}</div>
+                        <div className="text-xs text-muted-foreground">{t.admin?.dashboard?.recent7Days || "Last 7 Days"}</div>
                     </CardContent>
                 </Card>
             </div>
@@ -130,20 +137,20 @@ export default function AdminUserDetailPage() {
                     <CardHeader className="pb-2">
                         <CardTitle className="text-base flex items-center gap-2">
                             <Layers className="h-4 w-4 text-purple-500" />
-                            {t.admin?.dashboard?.userNotebooks || "错题本列表"}
+                            {t.admin?.dashboard?.userNotebooks || "Notebooks"}
                         </CardTitle>
                     </CardHeader>
                     <CardContent>
                         {data.notebooks.length === 0 ? (
                             <p className="text-sm text-muted-foreground py-4 text-center">
-                                {t.admin?.dashboard?.noData || "暂无数据"}
+                                {t.admin?.dashboard?.noData || "No Data"}
                             </p>
                         ) : (
                             <div className="space-y-2">
                                 {data.notebooks.map((nb) => (
                                     <div key={nb.id} className="flex justify-between items-center p-2 rounded-lg bg-muted/30">
                                         <span className="font-medium text-sm">{nb.name}</span>
-                                        <Badge variant="secondary" className="text-xs">{nb.errorCount} 题</Badge>
+                                        <Badge variant="secondary" className="text-xs">{(t.admin?.dashboard?.questionCount || "{count} questions").replace("{count}", String(nb.errorCount))}</Badge>
                                     </div>
                                 ))}
                             </div>
@@ -156,13 +163,13 @@ export default function AdminUserDetailPage() {
                     <CardHeader className="pb-2">
                         <CardTitle className="text-base flex items-center gap-2">
                             <CheckCircle className="h-4 w-4 text-green-500" />
-                            {t.admin?.dashboard?.masteryDistribution || "掌握度分布"}
+                            {t.admin?.dashboard?.masteryDistribution || "Mastery Distribution"}
                         </CardTitle>
                     </CardHeader>
                     <CardContent>
                         {totalMastery === 0 ? (
                             <p className="text-sm text-muted-foreground py-4 text-center">
-                                {t.admin?.dashboard?.noData || "暂无数据"}
+                                {t.admin?.dashboard?.noData || "No Data"}
                             </p>
                         ) : (
                             <div className="space-y-3">
@@ -198,7 +205,7 @@ export default function AdminUserDetailPage() {
                     <CardHeader className="pb-2">
                         <CardTitle className="text-base flex items-center gap-2">
                             <Tag className="h-4 w-4 text-blue-500" />
-                            {t.admin?.dashboard?.subjectDistribution || "学科错题分布"}
+                            {t.admin?.dashboard?.subjectDistribution || "Subject Distribution"}
                         </CardTitle>
                     </CardHeader>
                     <CardContent>
@@ -219,13 +226,13 @@ export default function AdminUserDetailPage() {
                 <CardHeader className="pb-2">
                     <CardTitle className="text-base flex items-center gap-2">
                         <Eye className="h-4 w-4 text-orange-500" />
-                        {t.admin?.dashboard?.recentErrors || "最近录入的错题"}
+                        {t.admin?.dashboard?.recentErrors || "Recent Error Items"}
                     </CardTitle>
                 </CardHeader>
                 <CardContent>
                     {data.recentErrorItems.length === 0 ? (
                         <p className="text-sm text-muted-foreground py-4 text-center">
-                            {t.admin?.dashboard?.noData || "暂无数据"}
+                            {t.admin?.dashboard?.noData || "No Data"}
                         </p>
                     ) : (
                         <div className="space-y-2">
@@ -233,25 +240,25 @@ export default function AdminUserDetailPage() {
                                 <div key={item.id} className="flex items-start justify-between p-3 rounded-lg bg-muted/30 gap-3">
                                     <div className="flex-1 min-w-0">
                                         <p className="text-sm font-medium truncate">
-                                            {item.questionText || item.ocrText || `(无题目文本)`}
+                                            {item.questionText || item.ocrText || t.admin?.dashboard?.noQuestionText}
                                         </p>
                                         <div className="flex items-center gap-2 mt-1">
                                             {item.subject && (
                                                 <Badge variant="outline" className="text-xs">{item.subject.name}</Badge>
                                             )}
-                                            {item.masteryLevel === 2 && (
-                                                <Badge variant="default" className="text-xs">{t.admin?.dashboard?.masteryMastered || "已掌握"}</Badge>
+                                            {item.masteryStatus === "mastered" && (
+                                                <Badge variant="default" className="text-xs">{t.admin?.dashboard?.masteryMastered || "Mastered"}</Badge>
                                             )}
-                                            {item.masteryLevel === 1 && (
-                                                <Badge variant="secondary" className="text-xs">{t.admin?.dashboard?.masteryReviewing || "复习中"}</Badge>
+                                            {item.masteryStatus === "reviewing" && (
+                                                <Badge variant="secondary" className="text-xs">{t.admin?.dashboard?.masteryReviewing || "Reviewing"}</Badge>
                                             )}
-                                            {item.masteryLevel === 0 && (
-                                                <Badge variant="outline" className="text-xs">{t.admin?.dashboard?.masteryNew || "未掌握"}</Badge>
+                                            {item.masteryStatus === "new" && (
+                                                <Badge variant="outline" className="text-xs">{t.admin?.dashboard?.masteryNew || "To Review"}</Badge>
                                             )}
                                         </div>
                                     </div>
                                     <span className="text-xs text-muted-foreground whitespace-nowrap">
-                                        {new Date(item.createdAt).toLocaleDateString()}
+                                        {formatDateTime(item.createdAt, 'yyyy-MM-dd', timeZone)}
                                     </span>
                                 </div>
                             ))}

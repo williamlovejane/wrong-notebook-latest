@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
     mockPrismaUser: {
         findUnique: vi.fn(),
         create: vi.fn(),
+        // 注册状态接口同时返回是否已有管理员
+        count: vi.fn(() => Promise.resolve(1)),
     },
     mockGetAppConfig: vi.fn(() => ({
         aiProvider: 'gemini',
@@ -36,10 +38,12 @@ vi.mock('bcryptjs', () => ({
 // Import after mocks
 import { POST } from '@/app/api/register/route';
 import { GET as GET_STATUS } from '@/app/api/register/status/route';
+import { registerIpLimiter } from '@/lib/rate-limit';
 
 describe('/api/register', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        registerIpLimiter.reset('5.5.5.5');
         // Reset config mock to allow registration by default
         mocks.mockGetAppConfig.mockReturnValue({
             aiProvider: 'gemini',
@@ -55,6 +59,23 @@ describe('/api/register', () => {
             educationStage: 'junior_high',
             enrollmentYear: 2024,
         };
+
+        it('同一 IP 每小时注册超过 10 次时返回 429', async () => {
+            mocks.mockPrismaUser.findUnique.mockResolvedValue({ id: 'exists' });
+            const send = () => POST(new Request('http://localhost/api/register', {
+                method: 'POST',
+                headers: { 'x-real-ip': '5.5.5.5' },
+                body: JSON.stringify(validUserData),
+            }));
+            for (let i = 0; i < 10; i++) {
+                expect((await send()).status).toBe(409);
+            }
+
+            const response = await send();
+            expect(response.status).toBe(429);
+            expect(Number(response.headers.get('Retry-After'))).toBeGreaterThan(0);
+            await expect(response.json()).resolves.toMatchObject({ code: 'TOO_MANY_REQUESTS' });
+        });
 
         it('应该成功注册新用户', async () => {
             mocks.mockPrismaUser.findUnique.mockResolvedValue(null); // 用户不存在
@@ -168,6 +189,18 @@ describe('/api/register', () => {
             expect(response.status).toBe(500); // Zod validation error
         });
 
+        it('配置中未指定注册开关时按关闭处理，返回 403', async () => {
+            mocks.mockGetAppConfig.mockReturnValue({ aiProvider: 'gemini' });
+
+            const response = await POST(new Request('http://localhost/api/register', {
+                method: 'POST',
+                body: JSON.stringify(validUserData),
+                headers: { 'Content-Type': 'application/json' },
+            }));
+
+            expect(response.status).toBe(403);
+        });
+
         it('应该在注册禁用时返回 403', async () => {
             // 重新 mock getAppConfig
             mocks.mockGetAppConfig.mockReturnValue({
@@ -238,7 +271,7 @@ describe('/api/register', () => {
             expect(data.allowRegistration).toBe(false);
         });
 
-        it('应该默认允许注册（当配置中未指定时）', async () => {
+        it('配置中未指定时按关闭处理', async () => {
             mocks.mockGetAppConfig.mockReturnValue({
                 aiProvider: 'gemini',
                 // 没有 allowRegistration 字段
@@ -248,7 +281,7 @@ describe('/api/register', () => {
             const data = await response.json();
 
             expect(response.status).toBe(200);
-            expect(data.allowRegistration).toBe(true);
+            expect(data.allowRegistration).toBe(false);
         });
     });
 });

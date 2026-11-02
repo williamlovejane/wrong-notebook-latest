@@ -4,9 +4,21 @@ import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { requireAdmin } from "@/lib/auth-utils"
 import { forbidden, internalError } from "@/lib/api-errors"
+import { countByMasteryStatus } from "@/lib/mastery"
 import { createLogger } from "@/lib/logger"
+import { getAppTimeZone } from "@/lib/config"
+import { formatDateTime, getDayRange } from "@/lib/date-time"
 
 const logger = createLogger('api:admin:dashboard')
+
+/** 不同用户的同名错题本（如都叫「英语」）合并计数，按错题数从多到少排列 */
+function mergeSubjectsByName(subjects: { name: string; _count: { errorItems: number } }[]) {
+    const counts = new Map<string, number>()
+    for (const subject of subjects) {
+        counts.set(subject.name, (counts.get(subject.name) || 0) + subject._count.errorItems)
+    }
+    return Array.from(counts, ([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
+}
 
 export async function GET() {
     const session = await getServerSession(authOptions)
@@ -71,7 +83,8 @@ export async function GET() {
 
         // 最近 7 天的错题录入趋势
         const now = new Date()
-        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+        const timeZone = getAppTimeZone()
+        const sevenDaysAgo = getDayRange(now, timeZone, -6).start
         const recentErrorItems = await prisma.errorItem.groupBy({
             by: ['createdAt'],
             where: {
@@ -87,12 +100,11 @@ export async function GET() {
         // 按日期聚合最近 7 天数据
         const dailyTrend: { date: string; count: number }[] = []
         for (let i = 6; i >= 0; i--) {
-            const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000)
-            const dateStr = d.toISOString().split('T')[0]
+            const dateStr = formatDateTime(getDayRange(now, timeZone, -i).start, 'yyyy-MM-dd', timeZone)
             dailyTrend.push({ date: dateStr, count: 0 })
         }
         for (const item of recentErrorItems) {
-            const dateStr = new Date(item.createdAt).toISOString().split('T')[0]
+            const dateStr = formatDateTime(item.createdAt, 'yyyy-MM-dd', timeZone)
             const found = dailyTrend.find(d => d.date === dateStr)
             if (found) {
                 found.count += item._count.id
@@ -100,17 +112,7 @@ export async function GET() {
         }
 
         // 掌握度统计 (全局)
-        const masteryStats = await prisma.errorItem.groupBy({
-            by: ['masteryLevel'],
-            _count: {
-                id: true
-            }
-        })
-        const masteryDistribution = {
-            new: masteryStats.find(m => m.masteryLevel === 0)?._count.id || 0,
-            reviewing: masteryStats.find(m => m.masteryLevel === 1)?._count.id || 0,
-            mastered: masteryStats.find(m => m.masteryLevel === 2)?._count.id || 0,
-        }
+        const masteryDistribution = await countByMasteryStatus()
 
         return NextResponse.json({
             overview: {
@@ -132,10 +134,7 @@ export async function GET() {
                 practiceCount: u._count.practiceRecords,
                 notebookCount: u._count.subjects,
             })),
-            subjectDistribution: subjectDistribution.map(s => ({
-                name: s.name,
-                count: s._count.errorItems,
-            })),
+            subjectDistribution: mergeSubjectsByName(subjectDistribution),
             dailyTrend,
             masteryDistribution,
         })

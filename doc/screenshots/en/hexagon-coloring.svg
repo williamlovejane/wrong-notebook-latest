@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 570" role="img" aria-label="Hexagon coloring: five colors and 4100 valid colorings">
+<rect width="960" height="570" fill="#ffffff"/>
+<g font-family="Arial, sans-serif" fill="#1e293b">
+<text x="480" y="40" text-anchor="middle" font-size="28" font-weight="700">Coloring a hexagon</text>
+<text x="480" y="69" text-anchor="middle" font-size="18" fill="#64748b">Five colors available. Adjacent regions must differ.</text>
+<line x1="425" y1="100" x2="425" y2="460" stroke="#e2e8f0" stroke-width="2"/>
+<g stroke="#1e293b" stroke-width="3">
+<polygon points="235,277 235,125 367,201" fill="#ef4444"/>
+<polygon points="235,277 367,201 367,353" fill="#f59e0b"/>
+<polygon points="235,277 367,353 235,429" fill="#3b82f6"/>
+<polygon points="235,277 235,429 103,353" fill="#22c55e"/>
+<polygon points="235,277 103,353 103,201" fill="#facc15"/>
+<polygon points="235,277 103,201 235,125" fill="#f59e0b"/>
+</g>
+<g font-size="25" font-weight="700" text-anchor="middle">
+<text x="280" y="211" fill="#fff">A</text><text x="324" y="285">B</text><text x="280" y="364" fill="#fff">C</text><text x="191" y="364" fill="#fff">D</text><text x="147" y="285">E</text><text x="191" y="211">F</text>
+</g>
+<text x="235" y="463" text-anchor="middle" fill="#2563eb" font-size="17">A → B → C → D → E → F → A</text>
+<text x="235" y="489" text-anchor="middle" fill="#64748b" font-size="15">One valid coloring (rotations count separately)</text>
+<text x="455" y="120" font-size="21" font-weight="700">Fix the color of A</text>
+<text x="455" y="153" font-size="17">S = same as A; D = different from A</text>
+<text x="455" y="184" font-size="18" fill="#2563eb">Next: S' = D,  D' = 4S + 3D</text>
+<rect x="448" y="206" width="465" height="222" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+<g font-size="19" text-anchor="middle">
+<text x="508" y="236" font-weight="700">Region</text><text x="650" y="236" font-weight="700">S</text><text x="820" y="236" font-weight="700">D</text>
+<g><text x="508" y="267">A</text><text x="650" y="267">1</text><text x="820" y="267">0</text></g><g><text x="508" y="296">B</text><text x="650" y="296">0</text><text x="820" y="296">4</text></g><g><text x="508" y="325">C</text><text x="650" y="325">4</text><text x="820" y="325">12</text></g><g><text x="508" y="354">D</text><text x="650" y="354">12</text><text x="820" y="354">52</text></g><g><text x="508" y="383">E</text><text x="650" y="383">52</text><text x="820" y="383">204</text></g><g><text x="508" y="412">F</text><text x="650" y="412">204</text><text x="820" y="412">820</text></g>
+</g>
+<g opacity="0"><animate attributeName="opacity" values="0;1" begin="0s" dur="2s" fill="freeze"/><rect x="448" y="445" width="465" height="55" rx="10" fill="#ecfdf5" stroke="#10b981"/><text x="680" y="480" text-anchor="middle" font-size="24" font-weight="700" fill="#047857">Total: 5 × 820 = 4100</text></g>
+<rect y="520" width="960" height="50" fill="#eff6ff"/>
+<text x="480" y="551" text-anchor="middle" font-size="19">F touches A, so only the 820 different-color endings are valid.</text>
+</g></svg>

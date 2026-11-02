@@ -4,6 +4,7 @@ export type ReanswerRequestBody = {
     subject: string;
     imageBase64?: string;
     gradeSemester?: string;
+    subjectId?: string;  // 所在错题本，用于限定候选知识点
 };
 
 export function buildReanswerRequestBody({
@@ -12,12 +13,14 @@ export function buildReanswerRequestBody({
     subject,
     imagePreview,
     gradeSemester,
+    subjectId,
 }: {
     questionText: string;
     language: 'zh' | 'en';
     subject: string;
     imagePreview?: string | null;
     gradeSemester?: string;
+    subjectId?: string | null;
 }): ReanswerRequestBody {
     const requestBody: ReanswerRequestBody = {
         questionText,
@@ -31,6 +34,10 @@ export function buildReanswerRequestBody({
 
     if (gradeSemester) {
         requestBody.gradeSemester = gradeSemester;
+    }
+
+    if (subjectId) {
+        requestBody.subjectId = subjectId;
     }
 
     return requestBody;

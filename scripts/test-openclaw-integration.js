@@ -15,7 +15,7 @@ const server = http.createServer((req, res) => {
         let body = '';
         req.on('data', chunk => { body += chunk; });
         req.on('end', () => {
-            console.log(`[Mock Openclaw] Received request:`, body.substring(0, 100));
+            console.log(`[Mock Openclaw] Received request:`, JSON.stringify(body.substring(0, 100)));
 
             setTimeout(() => {
                 const response = {

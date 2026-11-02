@@ -4,6 +4,9 @@ import CredentialsProvider from "next-auth/providers/credentials"
 import { prisma } from "@/lib/prisma"
 import { compare } from "bcryptjs"
 import { createLogger } from "@/lib/logger"
+import { DEFAULT_ADMIN_PASSWORD, isDefaultAdminPassword } from "@/lib/default-admin"
+import { TOO_MANY_ATTEMPTS } from "@/lib/auth-errors"
+import { getClientIp, loginAccountLimiter, loginIpLimiter } from "@/lib/rate-limit"
 
 const logger = createLogger('auth');
 
@@ -39,12 +42,24 @@ export const authOptions: NextAuthOptions = {
                 email: { label: "Email", type: "email" },
                 password: { label: "Password", type: "password" }
             },
-            async authorize(credentials) {
+            async authorize(credentials, req) {
                 logger.debug({ email: credentials?.email }, 'Authorize called');
                 if (!credentials?.email || !credentials?.password) {
                     logger.debug('Missing credentials');
                     return null
                 }
+
+                // 防暴力破解：账号或来源 IP 失败次数过多时，在校验密码前直接拒绝
+                const ip = getClientIp(req?.headers);
+                const accountKey = credentials.email.trim().toLowerCase();
+                if (loginAccountLimiter.retryAfter(accountKey) > 0 || (ip && loginIpLimiter.retryAfter(ip) > 0)) {
+                    logger.warn({ email: accountKey, ip }, 'Login locked after too many failed attempts');
+                    throw new Error(TOO_MANY_ATTEMPTS)
+                }
+                const recordFailure = () => {
+                    loginAccountLimiter.hit(accountKey);
+                    if (ip) loginIpLimiter.hit(ip);
+                };
 
                 const user = await prisma.user.findUnique({
                     where: {
@@ -54,6 +69,7 @@ export const authOptions: NextAuthOptions = {
 
                 if (!user) {
                     logger.debug('User not found');
+                    recordFailure();
                     return null
                 }
 
@@ -67,8 +83,11 @@ export const authOptions: NextAuthOptions = {
 
                 if (!isPasswordValid) {
                     logger.debug('Invalid password');
+                    recordFailure();
                     return null
                 }
+
+                loginAccountLimiter.reset(accountKey);
 
                 logger.info({ email: user.email }, 'Login successful');
 
@@ -77,6 +96,7 @@ export const authOptions: NextAuthOptions = {
                     email: user.email,
                     name: user.name,
                     role: user.role,
+                    mustChangePassword: isDefaultAdminPassword(user.role, credentials.password),
                 }
             }
         })
@@ -103,17 +123,26 @@ export const authOptions: NextAuthOptions = {
                     ...session.user,
                     id: token.id,
                     role: token.role,
+                    mustChangePassword: token.mustChangePassword === true,
                 }
             }
         },
-        async jwt({ token, user, account, profile }) {
+        async jwt({ token, user, trigger }) {
             if (user) {
                 logger.debug({ userId: user.id }, 'JWT callback - Initial signin');
                 return {
                     ...token,
                     id: user.id,
-                    role: (user as any).role,
+                    role: user.role,
+                    mustChangePassword: user.mustChangePassword === true,
                 }
+            }
+            // 客户端改完密码后调用 update()，以数据库中的密码为准重新判断，不信任客户端传值
+            if (trigger === "update" && token.mustChangePassword) {
+                const dbUser = await prisma.user.findUnique({ where: { id: token.id }, select: { password: true } })
+                const stillDefault = !!dbUser && await compare(DEFAULT_ADMIN_PASSWORD, dbUser.password)
+                logger.info({ userId: token.id, stillDefault }, 'JWT callback - Re-checked default password')
+                return { ...token, mustChangePassword: stillDefault }
             }
             logger.debug('JWT callback - Subsequent call');
             return token

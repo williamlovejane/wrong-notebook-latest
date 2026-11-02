@@ -1,0 +1,111 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 版本号由 scripts/package/build.mjs 根据发布标签传入（-PappVersionName / -PappVersionCode）
+def appVersionName = project.findProperty('appVersionName') ?: '0.0.0-dev'
+def appVersionCode = (project.findProperty('appVersionCode') ?: '1') as Integer
+
+// 发布签名：通过环境变量提供密钥库，未提供时 release 构建使用调试签名，仅供本地测试
+def keystoreFile = System.getenv('ANDROID_KEYSTORE_FILE')
+def hasReleaseKey = keystoreFile && file(keystoreFile).exists()
+
+// 单机版内置的运行时（Node.js、Prisma 引擎、服务端），由 scripts/package/build.mjs android 生成
+def standaloneRuntimeDir = file(project.findProperty('standaloneRuntimeDir') ?: rootProject.file('../../dist/android-runtime'))
+
+android {
+    namespace 'com.margrop.wrongnotebook'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+
+    defaultConfig {
+        applicationId 'com.margrop.wrongnotebook'
+        minSdk 24
+        targetSdk 35
+        versionCode appVersionCode
+        versionName appVersionName
+    }
+
+    signingConfigs {
+        if (hasReleaseKey) {
+            release {
+                storeFile file(keystoreFile)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD') ?: System.getenv('ANDROID_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    // mode：单机版在手机上运行完整服务端；客户端版连接已部署的服务器，沿用原包名以便覆盖升级
+    // device：手机版锁定竖屏；平板版跟随系统旋转，横竖屏均可使用
+    flavorDimensions = ['mode', 'device']
+    productFlavors {
+        standalone {
+            dimension 'mode'
+            applicationIdSuffix '.standalone'
+            // 内置服务端用到 ProcessBuilder 输出重定向等 Android 8.0 的接口
+            minSdk 26
+            manifestPlaceholders += [appLabel: '@string/app_name']
+            buildConfigField 'boolean', 'STANDALONE', 'true'
+            // 内置的 Node.js 和 Prisma 引擎只编译了 arm64-v8a
+            ndk { abiFilters 'arm64-v8a' }
+        }
+        client {
+            dimension 'mode'
+            manifestPlaceholders += [appLabel: '@string/app_name_client']
+            buildConfigField 'boolean', 'STANDALONE', 'false'
+        }
+        phone {
+            dimension 'device'
+            manifestPlaceholders += [screenOrientation: 'portrait']
+            buildConfigField 'String', 'DEVICE_TYPE', '"phone"'
+        }
+        tablet {
+            dimension 'device'
+            manifestPlaceholders += [screenOrientation: 'fullUser']
+            buildConfigField 'String', 'DEVICE_TYPE', '"tablet"'
+        }
+    }
+
+    sourceSets {
+        standalone {
+            jniLibs.srcDirs = [new File(standaloneRuntimeDir, 'jniLibs')]
+            assets.srcDirs += [new File(standaloneRuntimeDir, 'assets')]
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // 内置的 node 和迁移引擎是可执行文件，必须解压到 nativeLibraryDir 才能运行
+            useLegacyPackaging true
+            // 已用 patchelf 改写过库名，不再由构建工具剥离符号
+            keepDebugSymbols += ['**/*.so']
+        }
+    }
+
+    androidResources {
+        // server.zip 本身已压缩，原样存放可加快首次启动时的解压
+        noCompress += ['zip']
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig hasReleaseKey ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+}

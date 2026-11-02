@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { OpenAIProvider } from '@/lib/ai/openai-provider';
+import { OpenAIProvider, DEFAULT_OPENAI_MODEL } from '@/lib/ai/openai-provider';
 import { GeminiProvider } from '@/lib/ai/gemini-provider';
 import { AzureOpenAIProvider } from '@/lib/ai/azure-provider';
+import { AnthropicProvider, DEFAULT_ANTHROPIC_MODEL } from '@/lib/ai/anthropic-provider';
+import { MiniMaxCodeProvider } from '@/lib/ai/minimax-code-provider';
+import { DEFAULT_MINIMAX_CODE_MODEL } from '@/lib/minimax-code/constants';
+import { isVendorProvider, resolveVendorConfig } from '@/lib/ai/vendor-presets';
+import type { VendorProviderId } from '@/lib/ai/vendor-presets';
+import { requireAdmin } from '@/lib/auth-utils';
 import { createLogger } from '@/lib/logger';
+import { getErrorDetail } from '@/lib/error-message';
 
 const logger = createLogger('api:ai:test');
 
@@ -70,8 +77,9 @@ function parseErrorCode(error: unknown): string {
 }
 
 export interface AITestRequest {
-    provider: 'openai' | 'gemini' | 'azure';
-    apiKey: string;
+    provider: 'openai' | 'gemini' | 'azure' | 'anthropic' | 'minimax-code' | VendorProviderId;
+    /** MiniMax Code 使用已登录的凭据，不需要 apiKey */
+    apiKey?: string;
     baseUrl?: string;
     model?: string;
     // Azure 特有
@@ -88,21 +96,27 @@ export interface AITestResponse {
     visionSupport: boolean;
     textError?: string;
     visionError?: string;
+    /** 服务商的原始报错，便于管理员排查 */
+    textErrorDetail?: string;
+    visionErrorDetail?: string;
     modelInfo?: string;
 }
 
 export async function POST(request: NextRequest) {
     try {
-        // 验证登录
+        // 验证登录；测试会让服务端请求调用方给出的地址，只允许管理员
         const session = await getServerSession(authOptions);
         if (!session?.user) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+        if (!requireAdmin(session)) {
+            return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
         }
 
         const body: AITestRequest = await request.json();
         const { provider, apiKey, baseUrl, model, endpoint, deploymentName, apiVersion, language = 'zh' } = body;
 
-        if (!provider || !apiKey) {
+        if (!provider || (!apiKey && provider !== 'minimax-code')) {
             return NextResponse.json({ error: 'Missing provider or apiKey' }, { status: 400 });
         }
 
@@ -112,6 +126,8 @@ export async function POST(request: NextRequest) {
         let visionSupport = false;
         let textError: string | undefined;
         let visionError: string | undefined;
+        let textErrorDetail: string | undefined;
+        let visionErrorDetail: string | undefined;
         let modelInfo: string | undefined;
 
         // 辅助函数：判断错误是否为配置/连接问题（不应继续文本测试）
@@ -130,7 +146,7 @@ export async function POST(request: NextRequest) {
                     // 视觉成功 → 文本和视觉都支持，一步完成
                     textSupport = true;
                     visionSupport = true;
-                    modelInfo = model || 'gpt-4o';
+                    modelInfo = model || DEFAULT_OPENAI_MODEL;
                 }
             } else if (provider === 'gemini') {
                 const gemini = new GeminiProvider({ apiKey, baseUrl, model });
@@ -139,6 +155,29 @@ export async function POST(request: NextRequest) {
                     textSupport = true;
                     visionSupport = true;
                     modelInfo = model || 'gemini-2.0-flash';
+                }
+            } else if (provider === 'anthropic') {
+                const anthropic = new AnthropicProvider({ apiKey, baseUrl, model });
+                const result = await anthropic.analyzeImage(TEST_IMAGE_BASE64, TEST_IMAGE_MIME, language);
+                if (result.questionText || result.analysis) {
+                    textSupport = true;
+                    visionSupport = true;
+                    modelInfo = model || DEFAULT_ANTHROPIC_MODEL;
+                }
+            } else if (provider === 'minimax-code') {
+                const result = await new MiniMaxCodeProvider({ model }).analyzeImage(TEST_IMAGE_BASE64, TEST_IMAGE_MIME, language);
+                if (result.questionText || result.analysis) {
+                    textSupport = true;
+                    visionSupport = true;
+                    modelInfo = model || DEFAULT_MINIMAX_CODE_MODEL;
+                }
+            } else if (isVendorProvider(provider)) {
+                const vendorConfig = resolveVendorConfig(provider, { apiKey, baseUrl, model });
+                const result = await new OpenAIProvider(vendorConfig).analyzeImage(TEST_IMAGE_BASE64, TEST_IMAGE_MIME, language);
+                if (result.questionText || result.analysis) {
+                    textSupport = true;
+                    visionSupport = true;
+                    modelInfo = vendorConfig.model;
                 }
             } else if (provider === 'azure') {
                 if (!endpoint || !deploymentName) {
@@ -161,6 +200,7 @@ export async function POST(request: NextRequest) {
         } catch (error) {
             const errCode = parseErrorCode(error);
             const errMsg = error instanceof Error ? error.message : String(error);
+            visionErrorDetail = getErrorDetail(error);
 
             logger.info({ error: errMsg, errorCode: errCode, provider }, '视觉测试失败');
 
@@ -168,6 +208,7 @@ export async function POST(request: NextRequest) {
             if (isConfigError(errCode)) {
                 textError = errCode;
                 visionError = errCode;
+                textErrorDetail = visionErrorDetail;
                 logger.warn({ errorCode: errCode, provider }, '配置错误，跳过文本测试');
             } else {
                 // 非配置错误（如模型不支持多模态），标记为视觉不支持
@@ -188,7 +229,7 @@ export async function POST(request: NextRequest) {
                     );
                     if (result.questionText) {
                         textSupport = true;
-                        modelInfo = model || 'gpt-4o';
+                        modelInfo = model || DEFAULT_OPENAI_MODEL;
                     }
                 } else if (provider === 'gemini') {
                     const gemini = new GeminiProvider({ apiKey, baseUrl, model });
@@ -201,6 +242,26 @@ export async function POST(request: NextRequest) {
                     if (result.questionText) {
                         textSupport = true;
                         modelInfo = model || 'gemini-2.0-flash';
+                    }
+                } else if (provider === 'anthropic') {
+                    const anthropic = new AnthropicProvider({ apiKey, baseUrl, model });
+                    const result = await anthropic.generateSimilarQuestion('1+1=?', ['基础算术'], language, 'easy');
+                    if (result.questionText) {
+                        textSupport = true;
+                        modelInfo = model || DEFAULT_ANTHROPIC_MODEL;
+                    }
+                } else if (provider === 'minimax-code') {
+                    const result = await new MiniMaxCodeProvider({ model }).generateSimilarQuestion('1+1=?', ['基础算术'], language, 'easy');
+                    if (result.questionText) {
+                        textSupport = true;
+                        modelInfo = model || DEFAULT_MINIMAX_CODE_MODEL;
+                    }
+                } else if (isVendorProvider(provider)) {
+                    const vendorConfig = resolveVendorConfig(provider, { apiKey, baseUrl, model });
+                    const result = await new OpenAIProvider(vendorConfig).generateSimilarQuestion('1+1=?', ['基础算术'], language, 'easy');
+                    if (result.questionText) {
+                        textSupport = true;
+                        modelInfo = vendorConfig.model;
                     }
                 } else if (provider === 'azure') {
                     const azure = new AzureOpenAIProvider({
@@ -223,6 +284,7 @@ export async function POST(request: NextRequest) {
                 }
             } catch (error) {
                 textError = parseErrorCode(error);
+                textErrorDetail = getErrorDetail(error);
                 logger.warn({ error, provider }, '文本生成测试失败');
             }
         }
@@ -233,6 +295,8 @@ export async function POST(request: NextRequest) {
             visionSupport,
             textError,
             visionError,
+            textErrorDetail,
+            visionErrorDetail,
             modelInfo
         };
 

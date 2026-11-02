@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">错题本</string>
+    <string name="setup_title">连接服务器</string>
+    <string name="setup_description">输入错题本服务器地址（Docker、npm、桌面版或飞牛OS 部署均可），手机或平板需要能访问到该地址。</string>
+    <string name="setup_hint">例如 http://192.168.1.10:3000</string>
+    <string name="setup_connect">连接</string>
+    <string name="setup_checking">正在检查服务器…</string>
+    <string name="setup_invalid_url">请输入有效的 http:// 或 https:// 地址</string>
+    <string name="setup_check_failed_title">无法验证服务器</string>
+    <string name="setup_check_failed_message">%1$s\n\n仍要使用这个地址吗？</string>
+    <string name="setup_not_wrong_notebook">该地址有响应，但看起来不是错题本服务器。</string>
+    <string name="setup_use_anyway">仍然使用</string>
+    <string name="cancel">取消</string>
+    <string name="error_title">无法连接到服务器</string>
+    <string name="error_retry">重试</string>
+    <string name="error_change_server">更换服务器</string>
+    <string name="ssl_title">证书不受信任</string>
+    <string name="ssl_message">%1$s 的证书不受信任（可能是自签名证书）。只有确认是自己的服务器时才继续。</string>
+    <string name="ssl_continue">继续</string>
+    <string name="file_saved">已保存</string>
+    <string name="file_save_failed">保存文件失败</string>
+    <string name="no_app_for_action">没有可以处理此操作的应用</string>
+    <string name="app_name_client">错题本客户端</string>
+    <string name="error_local_title">错题本启动失败</string>
+    <string name="starting_unpack">首次启动或升级后正在准备，请稍候…</string>
+    <string name="starting_server">正在启动错题本…</string>
+</resources>

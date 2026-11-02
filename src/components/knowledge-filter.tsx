@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useLanguage } from "@/contexts/LanguageContext";
+import { useTimeZone } from "@/contexts/TimeZoneContext";
+import { getCalendarDate } from "@/lib/date-time";
 import {
     Select,
     SelectContent,
@@ -10,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { apiClient } from "@/lib/api-client";
 import { inferSubjectFromName } from "@/lib/knowledge-tags";
+import { frontendLogger } from "@/lib/frontend-logger";
 
 interface TagTreeNode {
     id: string;
@@ -23,6 +27,7 @@ interface KnowledgeFilterProps {
     gradeSemester?: string;
     tag?: string | null;
     subjectName?: string;
+    tagSet?: string;
     onFilterChange: (filters: {
         gradeSemester?: string;
         chapter?: string;
@@ -30,13 +35,6 @@ interface KnowledgeFilterProps {
     }) => void;
     className?: string;
 }
-
-// 年级编号到学期名称的映射 (用于根据用户入学年份计算当前年级)
-const EDUCATION_GRADE_MAP: Record<string, number[]> = {
-    'primary': [1, 2, 3, 4, 5, 6],
-    'junior_high': [7, 8, 9],
-    'senior_high': [10, 11, 12],
-};
 
 // 年级编号到学期key的映射
 // 注意：小学目前数据库中只存储了"一年级"这种粒度，没有分上下册，后续如果有变化需要更新这里
@@ -59,9 +57,12 @@ export function KnowledgeFilter({
     gradeSemester: initialGrade,
     tag: initialTag,
     subjectName,
+    tagSet = 'default',
     onFilterChange,
     className
 }: KnowledgeFilterProps) {
+    const { t } = useLanguage();
+    const { timeZone } = useTimeZone();
     const [gradeSemester, setGradeSemester] = useState<string>(initialGrade || "");
     const [chapter, setChapter] = useState<string>("");
     const [tag, setTag] = useState<string>(initialTag || "");
@@ -71,23 +72,26 @@ export function KnowledgeFilter({
     const [loading, setLoading] = useState(true);
 
     // 用户信息 (教育阶段和入学年份)
-    const [userInfo, setUserInfo] = useState<{ educationStage?: string; enrollmentYear?: number }>({});
 
     // 可用的年级学期选项 (根据用户信息过滤)
     const [availableGrades, setAvailableGrades] = useState<string[]>([]);
 
-    // Sync with props
-    useEffect(() => {
+    // Sync with props：在渲染时比较上一次的值，避免 effect 中多渲染一次
+    const [prevInitialGrade, setPrevInitialGrade] = useState(initialGrade);
+    if (initialGrade !== prevInitialGrade) {
+        setPrevInitialGrade(initialGrade);
         if (initialGrade !== undefined) setGradeSemester(initialGrade);
-    }, [initialGrade]);
+    }
 
-    useEffect(() => {
+    const [prevInitialTag, setPrevInitialTag] = useState(initialTag);
+    if (initialTag !== prevInitialTag) {
+        setPrevInitialTag(initialTag);
         if (initialTag !== undefined) setTag(initialTag || "");
-    }, [initialTag]);
+    }
 
     // 计算用户当前年级 (返回原始年级数值，不进行范围截断，以便判断由初升高等情况)
     const calculateCurrentGrade = useCallback((educationStage: string, enrollmentYear: number): number => {
-        const now = new Date();
+        const now = getCalendarDate(new Date(), timeZone);
         const currentYear = now.getFullYear();
         const currentMonth = now.getMonth() + 1; // 1-12
 
@@ -105,7 +109,7 @@ export function KnowledgeFilter({
             return yearsInSchool + 9;
         }
         return 0;
-    }, []);
+    }, [timeZone]);
 
     // 根据用户信息生成可用年级列表
     const generateAvailableGrades = useCallback((educationStage?: string, enrollmentYear?: number): string[] => {
@@ -149,7 +153,6 @@ export function KnowledgeFilter({
             try {
                 // 1. 获取用户信息
                 const user = await apiClient.get<{ educationStage?: string; enrollmentYear?: number }>('/api/user');
-                setUserInfo(user);
 
                 // 2. 生成可用年级
                 const grades = generateAvailableGrades(user.educationStage, user.enrollmentYear);
@@ -159,21 +162,21 @@ export function KnowledgeFilter({
                 const subject = subjectName ? inferSubjectFromName(subjectName) : 'math';
                 // 移除仅 math 的限制，尝试获取当前科目的标签
                 try {
-                    const data = await apiClient.get<{ tags: TagTreeNode[] }>(`/api/tags?subject=${subject}`);
+                    const data = await apiClient.get<{ tags: TagTreeNode[] }>(`/api/tags?subject=${subject}&tagSet=${encodeURIComponent(tagSet)}`);
                     setTagTree(data.tags);
                 } catch (e) {
-                    console.warn(`Failed to fetch tags for subject ${subject}`, e);
+                    frontendLogger.warn('[KnowledgeFilter]', 'Failed to fetch tags for subject', { subject, tagSet, error: e });
                     setTagTree([]);
                 }
             } catch (error) {
-                console.error("Failed to load filter data:", error);
+                frontendLogger.error('[KnowledgeFilter]', 'Failed to load filter data', { error });
             } finally {
                 setLoading(false);
             }
         };
 
         fetchData();
-    }, [subjectName, generateAvailableGrades]);
+    }, [subjectName, tagSet, generateAvailableGrades]);
 
     const handleGradeChange = (val: string) => {
         setGradeSemester(val);
@@ -237,10 +240,10 @@ export function KnowledgeFilter({
         <div className={`flex gap-2 ${className}`}>
             <Select value={gradeSemester} onValueChange={handleGradeChange} disabled={loading}>
                 <SelectTrigger className="w-[140px]">
-                    <SelectValue placeholder="年级/学期" />
+                    <SelectValue placeholder={t.filter?.gradeShort || "Grade"} />
                 </SelectTrigger>
                 <SelectContent>
-                    <SelectItem value="all">全部年级</SelectItem>
+                    <SelectItem value="all">{t.filter?.allGrades || "All grades"}</SelectItem>
                     {filteredGrades.map(gs => (
                         <SelectItem key={gs} value={gs}>{gs}</SelectItem>
                     ))}
@@ -249,10 +252,10 @@ export function KnowledgeFilter({
 
             <Select value={chapter} onValueChange={handleChapterChange} disabled={!gradeSemester || gradeSemester === "all"}>
                 <SelectTrigger className="w-[180px]">
-                    <SelectValue placeholder="章节" />
+                    <SelectValue placeholder={t.filter?.chapter || "Chapter"} />
                 </SelectTrigger>
                 <SelectContent>
-                    <SelectItem value="all">全部章节</SelectItem>
+                    <SelectItem value="all">{t.filter?.allChapters || "All chapters"}</SelectItem>
                     {chapters.map(c => (
                         <SelectItem key={c.id} value={c.name}>
                             {c.name.replace(/^第\d+章\s*/, '')}
@@ -263,12 +266,12 @@ export function KnowledgeFilter({
 
             <Select value={tag} onValueChange={handleTagChange} disabled={!chapter || chapter === "all"}>
                 <SelectTrigger className="w-[140px]">
-                    <SelectValue placeholder="知识点" />
+                    <SelectValue placeholder={t.filter?.knowledgePoint || "Tag"} />
                 </SelectTrigger>
                 <SelectContent>
-                    <SelectItem value="all">全部知识点</SelectItem>
-                    {tags.map(t => (
-                        <SelectItem key={t} value={t}>{t}</SelectItem>
+                    <SelectItem value="all">{t.filter?.allKnowledgePoints || "All tags"}</SelectItem>
+                    {tags.map(tagName => (
+                        <SelectItem key={tagName} value={tagName}>{tagName}</SelectItem>
                     ))}
                 </SelectContent>
             </Select>

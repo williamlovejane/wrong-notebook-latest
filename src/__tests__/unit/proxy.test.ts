@@ -1,0 +1,236 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { NextRequest } from 'next/server';
+
+// Mock next-auth/jwt
+vi.mock('next-auth/jwt', () => ({
+    getToken: vi.fn(),
+}));
+
+// Mock logger
+vi.mock('@/lib/logger', () => ({
+    createLogger: vi.fn(() => ({
+        debug: vi.fn(),
+        error: vi.fn(),
+        info: vi.fn(),
+    })),
+}));
+
+import { proxy } from '@/proxy';
+import { getToken } from 'next-auth/jwt';
+import type { JWT } from 'next-auth/jwt';
+
+describe('proxy', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    describe('未认证用户', () => {
+        it('应该重定向未认证用户到登录页', async () => {
+            vi.mocked(getToken).mockResolvedValue(null);
+
+            const req = new NextRequest('http://localhost:3000/notebooks');
+            const response = await proxy(req);
+
+            expect(response).not.toBeNull();
+            expect(response?.status).toBe(307); // Redirect status
+            expect(response?.headers.get('location')).toContain('/login');
+            expect(response?.headers.get('location')).toContain('callbackUrl=%2Fnotebooks');
+        });
+
+        it('应该允许未认证用户访问登录页', async () => {
+            vi.mocked(getToken).mockResolvedValue(null);
+
+            const req = new NextRequest('http://localhost:3000/login');
+            const response = await proxy(req);
+
+            // 返回 null 表示不拦截
+            expect(response).toBeNull();
+        });
+
+        it('应该允许未认证用户访问注册页', async () => {
+            vi.mocked(getToken).mockResolvedValue(null);
+
+            const req = new NextRequest('http://localhost:3000/register');
+            const response = await proxy(req);
+
+            expect(response).toBeNull();
+        });
+
+        it('应该保留查询参数在 callbackUrl 中', async () => {
+            vi.mocked(getToken).mockResolvedValue(null);
+
+            const req = new NextRequest('http://localhost:3000/notebooks/123?tab=details');
+            const response = await proxy(req);
+
+            expect(response).not.toBeNull();
+            const location = response?.headers.get('location') || '';
+            // callbackUrl 应该包含完整路径和查询参数
+            expect(decodeURIComponent(location)).toContain('/notebooks/123?tab=details');
+        });
+    });
+
+    describe('已认证用户', () => {
+        const mockToken = {
+            sub: 'user-123',
+            email: 'test@example.com',
+            name: 'Test User',
+        };
+
+        it('应该允许已认证用户访问受保护页面', async () => {
+            vi.mocked(getToken).mockResolvedValue(mockToken as unknown as JWT);
+
+            const req = new NextRequest('http://localhost:3000/notebooks');
+            const response = await proxy(req);
+
+            // 返回 undefined 表示允许继续
+            expect(response).toBeUndefined();
+        });
+
+        it('应该重定向已认证用户离开登录页', async () => {
+            vi.mocked(getToken).mockResolvedValue(mockToken as unknown as JWT);
+
+            const req = new NextRequest('http://localhost:3000/login');
+            const response = await proxy(req);
+
+            expect(response).not.toBeNull();
+            expect(response?.status).toBe(307);
+            expect(response?.headers.get('location')).toBe('http://localhost:3000/');
+        });
+
+        it('应该重定向已认证用户离开注册页', async () => {
+            vi.mocked(getToken).mockResolvedValue(mockToken as unknown as JWT);
+
+            const req = new NextRequest('http://localhost:3000/register');
+            const response = await proxy(req);
+
+            expect(response).not.toBeNull();
+            expect(response?.status).toBe(307);
+            expect(response?.headers.get('location')).toBe('http://localhost:3000/');
+        });
+
+        it('应该允许已认证用户访问首页', async () => {
+            vi.mocked(getToken).mockResolvedValue(mockToken as unknown as JWT);
+
+            const req = new NextRequest('http://localhost:3000/');
+            const response = await proxy(req);
+
+            expect(response).toBeUndefined();
+        });
+    });
+
+    describe('默认密码强制修改', () => {
+        const flaggedToken = { id: 'admin-1', role: 'admin', mustChangePassword: true };
+
+        it('仍使用默认密码的管理员访问任意页面都应跳到 /setup', async () => {
+            vi.mocked(getToken).mockResolvedValue(flaggedToken as unknown as JWT);
+
+            for (const path of ['/', '/notebooks', '/admin', '/stats?tab=tags']) {
+                const response = await proxy(new NextRequest(`http://localhost:3000${path}`));
+                expect(response?.status).toBe(307);
+                expect(response?.headers.get('location')).toBe('http://localhost:3000/setup');
+            }
+        });
+
+        it('访问 /setup 本身不应再重定向', async () => {
+            vi.mocked(getToken).mockResolvedValue(flaggedToken as unknown as JWT);
+
+            const response = await proxy(new NextRequest('http://localhost:3000/setup'));
+
+            expect(response).toBeUndefined();
+        });
+
+        it('已改密码的管理员正常访问页面', async () => {
+            vi.mocked(getToken).mockResolvedValue({ ...flaggedToken, mustChangePassword: false } as unknown as JWT);
+
+            const response = await proxy(new NextRequest('http://localhost:3000/notebooks'));
+
+            expect(response).toBeUndefined();
+        });
+    });
+
+    describe('错误处理', () => {
+        it('Token 验证失败时按未登录处理，跳到登录页而不是放行', async () => {
+            vi.mocked(getToken).mockRejectedValue(new Error('Token validation failed'));
+
+            const response = await proxy(new NextRequest('http://localhost:3000/admin?tab=users'));
+
+            expect(response?.status).toBe(307);
+            expect(response?.headers.get('location')).toContain('/login?callbackUrl=%2Fadmin%3Ftab%3Dusers');
+        });
+
+        it('Token 验证失败时仍可打开登录页，避免重定向循环', async () => {
+            vi.mocked(getToken).mockRejectedValue(new Error('Token validation failed'));
+
+            const response = await proxy(new NextRequest('http://localhost:3000/login'));
+
+            expect(response?.headers.get('location')).toBeNull();
+        });
+    });
+
+    describe('getToken 调用配置', () => {
+        it('应该使用正确的 cookie 名称', async () => {
+            vi.mocked(getToken).mockResolvedValue(null);
+
+            const req = new NextRequest('http://localhost:3000/notebooks');
+            await proxy(req);
+
+            expect(getToken).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    cookieName: 'next-auth.session-token',
+                })
+            );
+        });
+
+        it('应该传递 NEXTAUTH_SECRET', async () => {
+            const originalSecret = process.env.NEXTAUTH_SECRET;
+            process.env.NEXTAUTH_SECRET = 'test-secret';
+
+            vi.mocked(getToken).mockResolvedValue(null);
+
+            const req = new NextRequest('http://localhost:3000/notebooks');
+            await proxy(req);
+
+            expect(getToken).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    secret: 'test-secret',
+                })
+            );
+
+            process.env.NEXTAUTH_SECRET = originalSecret;
+        });
+    });
+
+    describe('路径匹配', () => {
+        it('中间件配置应该存在', async () => {
+            // 验证中间件导出存在
+            const proxyModule = await import('@/proxy');
+            expect(proxyModule.config).toBeDefined();
+            expect(proxyModule.config.matcher).toBeDefined();
+            expect(proxyModule.config.matcher.length).toBeGreaterThan(0);
+        });
+
+        it('应该处理根路径', async () => {
+            vi.mocked(getToken).mockResolvedValue(null);
+
+            const req = new NextRequest('http://localhost:3000/');
+            const response = await proxy(req);
+
+            expect(response).not.toBeNull();
+            expect(response?.headers.get('location')).toContain('/login');
+        });
+
+        it('应该处理嵌套路径', async () => {
+            vi.mocked(getToken).mockResolvedValue(null);
+
+            const req = new NextRequest('http://localhost:3000/notebooks/123/edit');
+            const response = await proxy(req);
+
+            expect(response).not.toBeNull();
+            expect(response?.headers.get('location')).toContain('callbackUrl');
+        });
+    });
+});

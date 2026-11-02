@@ -1,3 +1,5 @@
+import { frontendLogger } from "@/lib/frontend-logger";
+
 /**
  * 压缩图片文件
  * @param file 原始图片文件
@@ -54,12 +56,12 @@ export async function compressImage(
                     compressed = canvas.toDataURL('image/jpeg', currentQuality);
                     const newSize = (compressed.length * 3) / 4 / 1024 / 1024;
 
-                    console.log(`压缩质量: ${currentQuality.toFixed(1)}, 大小: ${newSize.toFixed(2)}MB`);
+                    frontendLogger.info('[ImageCompress]', 'Compression step', { quality: Number(currentQuality.toFixed(1)), sizeMB: Number(newSize.toFixed(2)) }, { sendToBackend: false });
 
                     if (newSize <= maxSizeMB) break;
                 }
 
-                console.log(`原始文件: ${(file.size / 1024 / 1024).toFixed(2)}MB, 压缩后: ${((compressed.length * 3) / 4 / 1024 / 1024).toFixed(2)}MB`);
+                frontendLogger.info('[ImageCompress]', 'Compression finished', { originalMB: Number((file.size / 1024 / 1024).toFixed(2)), compressedMB: Number(((compressed.length * 3) / 4 / 1024 / 1024).toFixed(2)) });
 
                 resolve(compressed);
             };
@@ -82,13 +84,13 @@ export async function processImageFile(file: File): Promise<string> {
     const fileSizeMB = file.size / 1024 / 1024;
     const threshold = 1; // 1MB 阈值
 
-    console.log(`文件大小: ${fileSizeMB.toFixed(2)}MB`);
+    frontendLogger.info('[ImageCompress]', 'File size checked', { sizeMB: Number(fileSizeMB.toFixed(2)) }, { sendToBackend: false });
 
     if (fileSizeMB > threshold) {
-        console.log('文件超过阈值，开始压缩...');
+        frontendLogger.info('[ImageCompress]', 'File exceeds threshold, compressing', undefined, { sendToBackend: false });
         return await compressImage(file, threshold);
     } else {
-        console.log('文件大小合适，无需压缩');
+        frontendLogger.info('[ImageCompress]', 'File size OK, no compression needed', undefined, { sendToBackend: false });
         // 直接返回 Base64
         return new Promise((resolve, reject) => {
             const reader = new FileReader();

@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,6 +8,7 @@ import { AppConfig } from "@/types/api";
 import { DEFAULT_ANALYZE_TEMPLATE, DEFAULT_SIMILAR_TEMPLATE } from "@/lib/ai/prompts";
 import { RotateCcw, AlertTriangle, Info } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { confirmDialog } from "@/lib/feedback";
 
 interface PromptSettingsProps {
     config: AppConfig;
@@ -29,52 +29,39 @@ function VariableInfo({ name, description }: VariableInfoProps) {
     );
 }
 
-export function PromptSettings({ config, onUpdate }: PromptSettingsProps) {
-    const { language, t } = useLanguage();
-    const [analyzeTemplate, setAnalyzeTemplate] = useState("");
-    const [similarTemplate, setSimilarTemplate] = useState("");
-
-    useEffect(() => {
-        setAnalyzeTemplate(config.prompts?.analyze || DEFAULT_ANALYZE_TEMPLATE);
-        setSimilarTemplate(config.prompts?.similar || DEFAULT_SIMILAR_TEMPLATE);
-    }, [config.prompts]);
-
-    const handleReset = (type: 'analyze' | 'similar') => {
-        if (!confirm(t.settings?.prompts?.resetConfirm || "Are you sure you want to reset to default?")) return;
-
-        const defaultValue = type === 'analyze' ? DEFAULT_ANALYZE_TEMPLATE : DEFAULT_SIMILAR_TEMPLATE;
-        if (type === 'analyze') {
-            setAnalyzeTemplate(defaultValue);
-            onUpdate('analyze', defaultValue);
-        } else {
-            setSimilarTemplate(defaultValue);
-            onUpdate('similar', defaultValue);
-        }
-    };
-
-    const handleChange = (type: 'analyze' | 'similar', value: string) => {
-        if (type === 'analyze') {
-            setAnalyzeTemplate(value);
-            onUpdate('analyze', value);
-        } else {
-            setSimilarTemplate(value);
-            onUpdate('similar', value);
-        }
-    };
-
-    const WarningBox = () => (
-        <div className="bg-amber-50 border border-amber-200 rounded-md p-3 flex items-start gap-3 text-amber-900 text-sm mb-4">
+/** 修改模板前的提醒：模板中的 {{变量}} 不能删除 */
+function WarningBox() {
+    const { t } = useLanguage();
+    return (
+        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-md p-3 flex items-start gap-3 text-amber-900 dark:text-amber-200 text-sm mb-4">
             <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600" />
             <div className="space-y-1">
                 <p className="font-medium">
                     {t.settings?.prompts?.caution || "Modify with Caution"}
                 </p>
-                <p className="text-amber-800/90 text-xs">
+                <p className="text-amber-800/90 dark:text-amber-200 text-xs">
                     {t.settings?.prompts?.warning || "Variables in {{brackets}} are used to inject dynamic content. Please preserve these variables, otherwise the AI providing may fail to get question context or return invalid formats."}
                 </p>
             </div>
         </div>
     );
+}
+
+export function PromptSettings({ config, onUpdate }: PromptSettingsProps) {
+    const { t } = useLanguage();
+    // 模板直接取自配置，清空时显示默认模板
+    const analyzeTemplate = config.prompts?.analyze || DEFAULT_ANALYZE_TEMPLATE;
+    const similarTemplate = config.prompts?.similar || DEFAULT_SIMILAR_TEMPLATE;
+
+    const handleReset = async (type: 'analyze' | 'similar') => {
+        if (!(await confirmDialog(t.settings?.prompts?.resetConfirm || "Are you sure you want to reset to default?", { destructive: true }))) return;
+
+        onUpdate(type, type === 'analyze' ? DEFAULT_ANALYZE_TEMPLATE : DEFAULT_SIMILAR_TEMPLATE);
+    };
+
+    const handleChange = (type: 'analyze' | 'similar', value: string) => {
+        onUpdate(type, value);
+    };
 
     return (
         <div className="space-y-4 border rounded-lg p-4 bg-muted/30">
@@ -118,7 +105,7 @@ export function PromptSettings({ config, onUpdate }: PromptSettingsProps) {
                                 />
                                 <VariableInfo
                                     name="provider_hints"
-                                    description={t.settings?.prompts?.vars?.providerHints || "System-injected hints (e.g., enforcing JSON format)."}
+                                    description={t.settings?.prompts?.vars?.providerHints || "Provider compatibility hints that follow the application output contract."}
                                 />
                             </div>
                         </div>

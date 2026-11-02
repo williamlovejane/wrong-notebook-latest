@@ -1,0 +1,101 @@
+{
+  "name": "wrong-notebook-desktop",
+  "productName": "WrongNotebook",
+  "version": "0.0.0",
+  "description": "错题本桌面版：内置服务端，开箱即用",
+  "main": "main.js",
+  "author": {
+    "name": "margrop",
+    "email": "margrop@users.noreply.github.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/margrop/wrong-notebook",
+  "private": true,
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "io.github.margrop.wrongnotebook",
+    "productName": "WrongNotebook",
+    "directories": {
+      "output": "release",
+      "buildResources": "."
+    },
+    "asar": false,
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server",
+        "to": "server",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "server/node_modules",
+        "to": "server/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "icon": "icon.png",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "错题本",
+      "artifactName": "WrongNotebook-Win-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "WrongNotebook-Win-Portable-${version}-${arch}.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "WrongNotebook-Mac-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "category": "Education",
+      "executableName": "wrong-notebook",
+      "synopsis": "错题本",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "artifactName": "WrongNotebook-Linux-${version}-${arch}.${ext}",
+      "maintainer": "margrop <margrop@users.noreply.github.com>"
+    },
+    "deb": {
+      "depends": [
+        "libnss3",
+        "libgtk-3-0",
+        "libxss1",
+        "libasound2 | libasound2t64"
+      ]
+    }
+  }
+}

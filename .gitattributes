@@ -1,0 +1,8 @@
+# 统一使用 LF 换行，避免 Windows 检出后脚本无法执行
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.PNG binary

@@ -1,3 +1,5 @@
+import { withGaosiExtension } from './math-gaosi';
+
 export const MATH_GRADE_ORDER: Record<string, number> = {
     '一年级': 1,
     '二年级': 2,
@@ -18,7 +20,8 @@ export const MATH_GRADE_ORDER: Record<string, number> = {
     '高三': 17,
 };
 
-export const MATH_CURRICULUM: Record<string, Array<{ chapter: string; sections: Array<{ section: string; tags: string[] }> }>> = {
+// 课内知识点（人教版）
+const MATH_SCHOOL_CURRICULUM: Record<string, Array<{ chapter: string; sections: Array<{ section: string; tags: string[] }> }>> = {
     // ===== 小学数学 =====
     '一年级': [
         {
@@ -589,3 +592,6 @@ export const MATH_CURRICULUM: Record<string, Array<{ chapter: string; sections: 
         },
     ],
 };
+
+// 课内知识点 + 小学课外拓展知识点
+export const MATH_CURRICULUM = withGaosiExtension(MATH_SCHOOL_CURRICULUM);

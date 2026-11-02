@@ -1,51 +1,60 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Bar, BarChart, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid, PieChart, Pie, Cell } from "recharts";
 
 import { Loader2, TrendingUp, CheckCircle, BookOpen } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { apiClient } from "@/lib/api-client";
+import { frontendLogger } from "@/lib/frontend-logger";
 import { AnalyticsData } from "@/types/api";
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
 
+/** recharts 传给自定义提示框的参数（只列出用到的字段） */
+interface ChartTooltipProps {
+    active?: boolean;
+    payload?: Array<{ name?: string | number; value?: string | number; color?: string }>;
+    label?: string | number;
+}
+
+function ActivityTooltip({ active, payload, label, activityLabel }: ChartTooltipProps & { activityLabel: string }) {
+    if (active && payload && payload.length) {
+        return (
+            <div className="bg-background border rounded-lg shadow-lg p-3 text-sm">
+                <p className="font-medium mb-1">{label}</p>
+                <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-violet-500" />
+                    <span className="text-muted-foreground">{activityLabel}:</span>
+                    <span className="font-bold">{payload[0].value}</span>
+                </div>
+            </div>
+        );
+    }
+    return null;
+}
+
 export function WrongAnswerStats() {
     const [data, setData] = useState<AnalyticsData | null>(null);
     const [loading, setLoading] = useState(true);
-    const { t, language } = useLanguage();
+    const { t } = useLanguage();
 
-    const CustomTooltip = ({ active, payload, label }: any) => {
-        if (active && payload && payload.length) {
-            return (
-                <div className="bg-background border rounded-lg shadow-lg p-3 text-sm">
-                    <p className="font-medium mb-1">{label}</p>
-                    <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-violet-500" />
-                        <span className="text-muted-foreground">{t.wrongAnswerStats.activity}:</span>
-                        <span className="font-bold">{payload[0].value}</span>
-                    </div>
-                </div>
-            );
-        }
-        return null;
-    };
-
-    useEffect(() => {
-        fetchAnalytics();
-    }, []);
-
-    const fetchAnalytics = async () => {
+    const fetchAnalytics = useCallback(async () => {
         try {
             const data = await apiClient.get<AnalyticsData>("/api/analytics");
             setData(data);
         } catch (error) {
-            console.error(error);
+            frontendLogger.error('[WrongAnswerStats]', 'Failed to fetch analytics', { error });
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面或条件变化时加载，请求前后更新加载状态和结果
+        fetchAnalytics();
+    }, [fetchAnalytics]);
 
     if (loading) {
         return (
@@ -162,7 +171,7 @@ export function WrongAnswerStats() {
                                     axisLine={false}
                                     tickFormatter={(value) => `${value}`}
                                 />
-                                <Tooltip content={<CustomTooltip />} cursor={{ fill: 'transparent' }} />
+                                <Tooltip content={<ActivityTooltip activityLabel={t.wrongAnswerStats.activity} />} cursor={{ fill: 'transparent' }} />
                                 <Bar
                                     dataKey="count"
                                     fill="url(#colorCount)"

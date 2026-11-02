@@ -1,129 +1,84 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import ReactCrop, { Crop, PixelCrop, centerCrop, makeAspectCrop } from "react-image-crop";
+import { useEffect, useState, useRef } from "react";
+import type { CSSProperties } from "react";
+import ReactCrop from "react-image-crop";
+import type { Crop } from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { RegionSelector } from "@/components/region-selector";
+import { ZoomControls } from "@/components/zoom-controls";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { cropImageRegions, toSafeImageSrc } from "@/lib/image-crop";
+import type { ImageRegion } from "@/lib/image-crop";
+import { frontendLogger } from "@/lib/frontend-logger";
+import { useImageZoom } from "@/lib/use-image-zoom";
+
+// 未缩放时图片适应弹窗的尺寸
+const FIT_STYLE: Record<"single" | "multi", CSSProperties> = {
+    single: { maxHeight: "70vh", maxWidth: "100%", objectFit: "contain" },
+    multi: { maxHeight: "65vh", maxWidth: "100%", objectFit: "contain" },
+};
 
 interface ImageCropperProps {
     imageSrc: string;
     open: boolean;
     onClose: () => void;
     onCropComplete: (croppedImageBlob: Blob) => void;
+    /** 提供时显示「多题框选」模式，返回每个框裁剪出的图片 */
+    onMultiCropComplete?: (croppedImageBlobs: Blob[]) => void;
 }
 
-// Helper to center the crop initially
-function centerAspectCrop(
-    mediaWidth: number,
-    mediaHeight: number,
-    aspect: number,
-) {
-    return centerCrop(
-        makeAspectCrop(
-            {
-                unit: '%',
-                width: 90,
-            },
-            aspect,
-            mediaWidth,
-            mediaHeight,
-        ),
-        mediaWidth,
-        mediaHeight,
-    )
-}
-
-export function ImageCropper({ imageSrc, open, onClose, onCropComplete }: ImageCropperProps) {
-    const { t, language } = useLanguage();
+export function ImageCropper({ imageSrc, open, onClose, onCropComplete, onMultiCropComplete }: ImageCropperProps) {
+    const { t } = useLanguage();
+    const safeImageSrc = toSafeImageSrc(imageSrc);
+    // 始终保存百分比坐标，缩放改变图片显示尺寸后仍然准确
     const [crop, setCrop] = useState<Crop>();
-    const [completedCrop, setCompletedCrop] = useState<PixelCrop>();
     const imgRef = useRef<HTMLImageElement>(null);
+    const [mode, setModeState] = useState<"single" | "multi">("single");
+    const { containerRef, zoom, imageStyle, measureImage, zoomIn, zoomOut, reset: resetZoom } = useImageZoom(FIT_STYLE[mode]);
+    // 换图后回到 100%
+    useEffect(() => {
+        resetZoom();
+    }, [imageSrc, resetZoom]);
+    const setMode = (next: "single" | "multi") => {
+        resetZoom();
+        setModeState(next);
+    };
+    // 框选结果与图片绑定，换图后自动清空
+    const [regionState, setRegionState] = useState<{ src: string; regions: ImageRegion[] }>({ src: imageSrc, regions: [] });
+    const regions = regionState.src === imageSrc ? regionState.regions : [];
+    const setRegions = (next: ImageRegion[]) => setRegionState({ src: imageSrc, regions: next });
+    const multiImgRef = useRef<HTMLImageElement>(null);
 
-    function onImageLoad(e: React.SyntheticEvent<HTMLImageElement>) {
-        const { width, height } = e.currentTarget;
-        // Start with a centered crop covering most of the image
-        // Since we want free aspect, we just make a box
-        const initialCrop = centerCrop(
-            {
-                unit: '%',
-                width: 80,
-                height: 50,
-                x: 10,
-                y: 25
-            },
-            width,
-            height
-        );
-        setCrop(initialCrop);
-    }
-
-    const getCroppedImg = async (
-        image: HTMLImageElement,
-        crop: PixelCrop
-    ): Promise<Blob | null> => {
-        const canvas = document.createElement("canvas");
-        const scaleX = image.naturalWidth / image.width;
-        const scaleY = image.naturalHeight / image.height;
-        canvas.width = crop.width * scaleX;
-        canvas.height = crop.height * scaleY;
-        const ctx = canvas.getContext("2d");
-
-        if (!ctx) {
-            return null;
+    const handleMultiConfirm = async () => {
+        if (!multiImgRef.current || regions.length === 0 || !onMultiCropComplete) return;
+        try {
+            onMultiCropComplete(await cropImageRegions(multiImgRef.current, regions));
+            setRegions([]);
+        } catch (e) {
+            frontendLogger.error('[ImageCropper]', 'Multi-image crop failed', { error: e });
         }
-
-        ctx.drawImage(
-            image,
-            crop.x * scaleX,
-            crop.y * scaleY,
-            crop.width * scaleX,
-            crop.height * scaleY,
-            0,
-            0,
-            crop.width * scaleX,
-            crop.height * scaleY
-        );
-
-        return new Promise((resolve, reject) => {
-            canvas.toBlob((blob) => {
-                if (!blob) {
-                    reject(new Error("Canvas is empty"));
-                    return;
-                }
-                resolve(blob);
-            }, "image/jpeg");
-        });
     };
 
+    function onImageLoad(e: React.SyntheticEvent<HTMLImageElement>) {
+        // 默认框选整张图片，不拖动直接确认即为整图
+        setCrop({ unit: '%', x: 0, y: 0, width: 100, height: 100 });
+        measureImage(e.currentTarget);
+    }
+
     const handleConfirm = async () => {
-        if (completedCrop && imgRef.current) {
-            try {
-                const croppedBlob = await getCroppedImg(imgRef.current, completedCrop);
-                if (croppedBlob) {
-                    onCropComplete(croppedBlob);
-                }
-            } catch (e) {
-                console.error(e);
-            }
-        } else {
-            // If no crop, just return original? Or force crop?
-            // Let's assume user wants to crop. If they didn't touch it, use current crop state?
-            // If crop is undefined, maybe they want whole image?
-            // For now, let's require a crop or just use the whole image if nothing selected?
-            // Actually, better to just close if they cancel.
-            // If they click confirm but no crop is set (unlikely with initial state), do nothing or alert.
-            if (!completedCrop && imageSrc) {
-                // Fallback: fetch original and return as blob
-                try {
-                    const res = await fetch(imageSrc);
-                    const blob = await res.blob();
-                    onCropComplete(blob);
-                } catch (e) {
-                    console.error(e);
-                }
-            }
+        if (!imgRef.current) return;
+        // 没有有效选框（如只点了一下）时使用整张图片
+        const region: ImageRegion = crop && crop.width > 0 && crop.height > 0
+            ? { x: crop.x / 100, y: crop.y / 100, width: crop.width / 100, height: crop.height / 100 }
+            : { x: 0, y: 0, width: 1, height: 1 };
+        try {
+            const [croppedBlob] = await cropImageRegions(imgRef.current, [region]);
+            onCropComplete(croppedBlob);
+        } catch (e) {
+            frontendLogger.error('[ImageCropper]', 'Crop failed', { error: e });
         }
     };
 
@@ -134,35 +89,76 @@ export function ImageCropper({ imageSrc, open, onClose, onCropComplete }: ImageC
                     <DialogTitle>{t.common.cropper?.title || "Crop Image"}</DialogTitle>
                 </DialogHeader>
 
-                <div className="flex-1 bg-black w-full overflow-auto flex items-center justify-center p-4">
-                    <ReactCrop
-                        crop={crop}
-                        onChange={(_, percentCrop) => setCrop(percentCrop)}
-                        onComplete={(c) => setCompletedCrop(c)}
-                        className="max-h-full"
-                    >
-                        <img
-                            ref={imgRef}
-                            alt="Crop me"
-                            src={imageSrc}
-                            onLoad={onImageLoad}
-                            style={{ maxHeight: '70vh', maxWidth: '100%', objectFit: 'contain' }}
-                        />
-                    </ReactCrop>
+                <div className="relative min-h-0 flex-1 bg-black">
+                    {/* m-auto 居中：图片放大超出容器后仍能滚动到左上角 */}
+                    <div ref={containerRef} className="flex h-full w-full overflow-auto p-4">
+                        <div className="m-auto">
+                            {mode === "multi" ? (
+                                <RegionSelector
+                                    ref={multiImgRef}
+                                    imageSrc={safeImageSrc}
+                                    regions={regions}
+                                    onChange={setRegions}
+                                    imageStyle={imageStyle}
+                                    onImageLoad={(e) => measureImage(e.currentTarget)}
+                                />
+                            ) : (
+                                <ReactCrop crop={crop} onChange={(_, percentCrop) => setCrop(percentCrop)}>
+                                    <img
+                                        ref={imgRef}
+                                        alt="Crop me"
+                                        src={safeImageSrc}
+                                        onLoad={onImageLoad}
+                                        style={imageStyle}
+                                    />
+                                </ReactCrop>
+                            )}
+                        </div>
+                    </div>
+                    <div className="absolute right-3 top-3">
+                        <ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetZoom} />
+                    </div>
                 </div>
 
-                <div className="p-4 border-t bg-background shrink-0">
-                    <div className="flex justify-between items-center">
+                <div className="p-4 border-t bg-background shrink-0 space-y-3">
+                    {onMultiCropComplete && (
+                        <div className="grid grid-cols-2 gap-1 rounded-md bg-muted p-1 sm:w-80">
+                            {(["single", "multi"] as const).map((value) => (
+                                <button
+                                    key={value}
+                                    type="button"
+                                    onClick={() => setMode(value)}
+                                    className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${mode === value ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+                                >
+                                    {value === "single" ? t.batchImport.singleMode : t.batchImport.multiMode}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
                         <p className="text-sm text-muted-foreground">
-                            {t.common.cropper?.hint || "💡 Drag to adjust crop area"}
+                            {mode === "multi"
+                                ? `${t.batchImport.hint} ${t.batchImport.regionCount.replace("{count}", String(regions.length))}`
+                                : (t.common.cropper?.hint || "💡 Drag to adjust crop area")}
                         </p>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 justify-end">
+                            {mode === "multi" && regions.length > 0 && (
+                                <Button variant="ghost" onClick={() => setRegions([])}>
+                                    {t.batchImport.clear}
+                                </Button>
+                            )}
                             <Button variant="outline" onClick={onClose}>
                                 {t.common.cancel || "Cancel"}
                             </Button>
-                            <Button onClick={handleConfirm}>
-                                {t.common.confirm || "Confirm"}
-                            </Button>
+                            {mode === "multi" ? (
+                                <Button onClick={handleMultiConfirm} disabled={regions.length === 0}>
+                                    {t.batchImport.start.replace("{count}", String(regions.length))}
+                                </Button>
+                            ) : (
+                                <Button onClick={handleConfirm}>
+                                    {t.common.confirm || "Confirm"}
+                                </Button>
+                            )}
                         </div>
                     </div>
                 </div>

@@ -1,11 +1,19 @@
 import { GoogleGenAI } from "@google/genai";
-import { AIService, ParsedQuestion, DifficultyLevel, AIConfig, ReanswerQuestionResult, GeogebraAnalysisResult } from "./types";
-import { generateAnalyzePrompt, generateSimilarQuestionPrompt, generateGeogebraPrompt } from './prompts';
-import { safeParseParsedQuestion } from './schema';
+import type { AIService, GradeLevel, ParsedQuestion, DifficultyLevel, AIConfig, ReanswerQuestionResult, GeogebraAnalysisResult, MasteryEvaluationInput, MasteryEvaluationResult, AnswerGradingInput, AnswerGradingResult, TagSuggestionInput, TagSuggestionResult, CandidateTags, FigureResult } from "./types";
+import { generateGradeRecognitionRequest, generateAnalyzeRequest, generateSimilarQuestionRequest, generateGeogebraRequest, generateMasteryRequest, generateGradingRequest, generateTagSuggestRequest, generateFigureRequest, generateSvgAnimationRequest, generateSvgNarrationRequest, generateLatexFixRequest } from './prompt-requests';
+import { parseNarration, sanitizeSvgAnimation } from '../svg-animation';
+import type { NarrationSegment } from '../svg-animation';
+import { parseLatexFix } from './latex-fix';
+import type { LatexFixInput, LatexFixResult } from './latex-fix';
+import { parseGradeRecognition, safeParseParsedQuestion, parseMasteryEvaluation, parseAnswerGrading, normalizeSubject, parseTagSuggestion, parseDifficultyStars, parseFigure, stripThinkingTags } from './schema';
 import { getAppConfig } from '../config';
-import { getMathTagsFromDB, getTagsFromDB } from './tag-service';
+import { prefetchSubjectTags } from './tag-service';
 import { createLogger } from '../logger';
+import { AI_OUTPUT_TRUNCATED } from './truncation';
 import { normalizeMistakeStatusForSave } from '../mistake-status';
+import { parseRecognizedGrade } from '../question-grade';
+import { normalizeGeneratedQuestion } from './generated-question';
+import { normalizeAiQuestionTags } from './knowledge-points';
 
 const logger = createLogger('ai:gemini');
 
@@ -86,16 +94,17 @@ export class GeminiProvider implements AIService {
     }
 
     private extractTag(text: string, tagName: string): string | null {
+        const cleaned = stripThinkingTags(text);
         const startTag = `<${tagName}>`;
         const endTag = `</${tagName}>`;
-        const startIndex = text.indexOf(startTag);
-        const endIndex = text.lastIndexOf(endTag);
+        const startIndex = cleaned.indexOf(startTag);
+        const endIndex = cleaned.lastIndexOf(endTag);
 
         if (startIndex === -1 || endIndex === -1 || startIndex >= endIndex) {
             return null;
         }
 
-        return text.substring(startIndex + startTag.length, endIndex).trim();
+        return cleaned.substring(startIndex + startTag.length, endIndex).trim();
     }
 
     private parseResponse(text: string): ParsedQuestion {
@@ -144,7 +153,10 @@ export class GeminiProvider implements AIService {
             mistakeStatus,
             subject,
             knowledgePoints,
-            requiresImage
+            requiresImage,
+            gradeSemester: parseRecognizedGrade(this.extractTag(text, "grade_semester")),
+            difficultyStars: parseDifficultyStars(this.extractTag(text, "difficulty_stars")),
+            ...parseFigure(this.extractTag(text, "has_figure"), this.extractTag(text, "figure_svg")),
         };
 
         // Final Schema Validation
@@ -158,23 +170,15 @@ export class GeminiProvider implements AIService {
         }
     }
 
-    async analyzeImage(imageBase64: string, mimeType: string = "image/jpeg", language: 'zh' | 'en' = 'zh', grade?: 7 | 8 | 9 | 10 | 11 | 12 | null, subject?: string | null, gradeSemester?: string | null): Promise<ParsedQuestion> {
+    async analyzeImage(imageBase64: string, mimeType: string = "image/jpeg", language: 'zh' | 'en' = 'zh', grade?: GradeLevel | null, subject?: string | null, gradeSemester?: string | null, candidateTags?: CandidateTags): Promise<ParsedQuestion> {
         const config = getAppConfig();
 
-        // 从数据库获取各学科标签
-        const prefetchedMathTags = (subject === '数学' || !subject) ? await getMathTagsFromDB(grade || null) : [];
-        const prefetchedPhysicsTags = (subject === '物理' || !subject) ? await getTagsFromDB('physics') : [];
-        const prefetchedChemistryTags = (subject === '化学' || !subject) ? await getTagsFromDB('chemistry') : [];
-        const prefetchedBiologyTags = (subject === '生物' || !subject) ? await getTagsFromDB('biology') : [];
-        const prefetchedEnglishTags = (subject === '英语' || !subject) ? await getTagsFromDB('english') : [];
+        // 有错题本学段 + 学科时直接使用其全部知识点，否则按学科、年级取标签
+        const tagOptions = candidateTags ? { candidateTags } : await prefetchSubjectTags(subject, grade);
 
-        const prompt = generateAnalyzePrompt(language, grade, subject, {
+        const prompt = generateAnalyzeRequest(language, grade, subject, {
             customTemplate: config.prompts?.analyze,
-            prefetchedMathTags,
-            prefetchedPhysicsTags,
-            prefetchedChemistryTags,
-            prefetchedBiologyTags,
-            prefetchedEnglishTags,
+            ...tagOptions,
         }, gradeSemester);
 
         logger.box('🔍 AI Image Analysis Request', {
@@ -186,7 +190,7 @@ export class GeminiProvider implements AIService {
             language,
             grade: grade || 'all'
         });
-        logger.box('📝 Full Prompt', prompt);
+        logger.box('📝 Full Prompt', prompt.system);
 
         try {
             // 构建请求参数（用于日志显示）
@@ -194,7 +198,7 @@ export class GeminiProvider implements AIService {
                 model: this.modelName,
                 contents: [
                     {
-                        text: prompt
+                        text: prompt.user
                     },
                     {
                         inlineData: {
@@ -209,9 +213,10 @@ export class GeminiProvider implements AIService {
 
             const response = await this.retryOperation(() => this.ai.models.generateContent({
                 model: this.modelName,
+                config: { systemInstruction: prompt.system },
                 contents: [
                     {
-                        text: prompt
+                        text: prompt.user
                     },
                     {
                         inlineData: {
@@ -230,8 +235,8 @@ export class GeminiProvider implements AIService {
 
             logger.box('🤖 AI Raw Response', text);
 
-            if (!text) throw new Error("Empty response from AI");
-            const parsedResult = this.parseResponse(text);
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
+            const parsedResult = normalizeAiQuestionTags(this.parseResponse(text), tagOptions);
 
             logger.box('✅ Parsed & Validated Result', JSON.stringify(parsedResult, null, 2));
 
@@ -247,10 +252,11 @@ export class GeminiProvider implements AIService {
         }
     }
 
-    async generateSimilarQuestion(originalQuestion: string, knowledgePoints: string[], language: 'zh' | 'en' = 'zh', difficulty: DifficultyLevel = 'medium', gradeSemester?: string | null): Promise<ParsedQuestion> {
+    async generateSimilarQuestion(originalQuestion: string, knowledgePoints: string[], language: 'zh' | 'en' = 'zh', difficulty: DifficultyLevel = 'medium', gradeSemester?: string | null, originalFigureSvg?: string | null): Promise<ParsedQuestion> {
         const config = getAppConfig();
-        const prompt = generateSimilarQuestionPrompt(language, originalQuestion, knowledgePoints, difficulty, {
-            customTemplate: config.prompts?.similar
+        const prompt = generateSimilarQuestionRequest(language, originalQuestion, knowledgePoints, difficulty, {
+            customTemplate: config.prompts?.similar,
+            originalFigureSvg,
         }, gradeSemester);
 
         logger.box('🎯 Generate Similar Question Request', {
@@ -261,24 +267,25 @@ export class GeminiProvider implements AIService {
             difficulty,
             language
         });
-        logger.box('📝 Full Prompt', prompt);
+        logger.box('📝 Full Prompt', prompt.system);
 
         try {
             const response = await this.retryOperation(() => this.ai.models.generateContent({
                 model: this.modelName,
-                contents: prompt
+                config: { systemInstruction: prompt.system },
+                contents: prompt.user
             }));
 
             const text = response.text || '';
 
             logger.box('🤖 AI Raw Response', text);
 
-            if (!text) throw new Error("Empty response from AI");
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
             const parsedResult = this.parseResponse(text);
 
             logger.box('✅ Parsed & Validated Result', JSON.stringify(parsedResult, null, 2));
 
-            return parsedResult;
+            return normalizeGeneratedQuestion(parsedResult);
 
         } catch (error) {
             logger.box('❌ Error during question generation', {
@@ -290,9 +297,9 @@ export class GeminiProvider implements AIService {
         }
     }
 
-    async reanswerQuestion(questionText: string, language: 'zh' | 'en' = 'zh', subject?: string | null, imageBase64?: string, gradeSemester?: string | null): Promise<ReanswerQuestionResult> {
-        const { generateReanswerPrompt } = await import('./prompts');
-        const prompt = generateReanswerPrompt(language, questionText, subject, undefined, gradeSemester);
+    async reanswerQuestion(questionText: string, language: 'zh' | 'en' = 'zh', subject?: string | null, imageBase64?: string, gradeSemester?: string | null, candidateTags?: CandidateTags): Promise<ReanswerQuestionResult> {
+        const { generateReanswerRequest } = await import('./prompt-requests');
+        const prompt = generateReanswerRequest(language, questionText, subject, { candidateTags }, gradeSemester);
 
         logger.info({
             provider: 'Gemini',
@@ -310,15 +317,16 @@ export class GeminiProvider implements AIService {
                 // 移除 data:image/xxx;base64, 前缀（如果存在）
                 const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
                 contents = [
-                    { text: prompt },
+                    { text: prompt.user },
                     { inlineData: { mimeType: 'image/jpeg', data: base64Data } }
                 ];
             } else {
-                contents = prompt;
+                contents = prompt.user;
             }
 
             const response = await this.retryOperation(() => this.ai.models.generateContent({
                 model: this.modelName,
+                config: { systemInstruction: prompt.system },
                 contents
             }));
 
@@ -326,7 +334,7 @@ export class GeminiProvider implements AIService {
 
             logger.debug({ rawResponse: text }, 'AI raw response');
 
-            if (!text) throw new Error("Empty response from AI");
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
 
             // 解析响应
             const answerText = this.extractTag(text, "answer_text") || "";
@@ -342,7 +350,7 @@ export class GeminiProvider implements AIService {
 
             logger.info('Reanswer parsed successfully');
 
-            return { answerText, analysis, knowledgePoints: knowledgePointsParsed, wrongAnswerText, mistakeAnalysis, mistakeStatus };
+            return normalizeAiQuestionTags({ answerText, analysis, knowledgePoints: knowledgePointsParsed, wrongAnswerText, mistakeAnalysis, mistakeStatus, subject: normalizeSubject(this.extractTag(text, "subject")), gradeSemester: parseRecognizedGrade(this.extractTag(text, "grade_semester")), difficultyStars: parseDifficultyStars(this.extractTag(text, "difficulty_stars")) }, { candidateTags });
 
         } catch (error) {
             logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during reanswer');
@@ -352,7 +360,7 @@ export class GeminiProvider implements AIService {
     }
 
     async analyzeForGeogebra(questionText: string, answerText: string, analysis: string, previousErrors?: string): Promise<GeogebraAnalysisResult> {
-        const prompt = generateGeogebraPrompt(questionText, answerText, analysis, previousErrors);
+        const prompt = generateGeogebraRequest(questionText, answerText, analysis, previousErrors);
 
         logger.info({
             provider: 'Gemini',
@@ -363,13 +371,14 @@ export class GeminiProvider implements AIService {
         try {
             const response = await this.retryOperation(() => this.ai.models.generateContent({
                 model: this.modelName,
-                contents: prompt
+                config: { systemInstruction: prompt.system },
+                contents: prompt.user
             }));
 
             const text = response.text || '';
             logger.debug({ rawResponse: text }, 'GeoGebra AI raw response');
 
-            if (!text) throw new Error("Empty response from AI");
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
 
             // Extract JSON from response (handle possible markdown code blocks)
             let jsonStr = text.trim();
@@ -399,41 +408,235 @@ export class GeminiProvider implements AIService {
         }
     }
 
+    async evaluateMastery(input: MasteryEvaluationInput): Promise<MasteryEvaluationResult> {
+        const prompt = generateMasteryRequest(input);
+
+        logger.info({
+            provider: 'Gemini',
+            historyCount: input.history.length,
+        }, 'Mastery Evaluation Request');
+
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                config: { systemInstruction: prompt.system },
+                contents: prompt.user
+            }));
+
+            const text = response.text || '';
+            logger.debug({ rawResponse: text }, 'Mastery AI raw response');
+
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
+            return parseMasteryEvaluation(text);
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during mastery evaluation');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
+    async recognizeGrade(questionText: string): Promise<string | null> {
+        const prompt = generateGradeRecognitionRequest(questionText);
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                config: { systemInstruction: prompt.system },
+                contents: prompt.user,
+            }));
+            const text = response.text || '';
+            if (!text && response.candidates?.[0]?.finishReason === 'MAX_TOKENS') throw new Error(AI_OUTPUT_TRUNCATED);
+            return parseGradeRecognition(text);
+        } catch (error) {
+            logger.error({ error }, '识别题目年级失败');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
+    async gradeAnswer(input: AnswerGradingInput): Promise<AnswerGradingResult> {
+        const prompt = generateGradingRequest(input);
+        logger.info({ provider: 'Gemini' }, 'Answer Grading Request');
+
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                config: { systemInstruction: prompt.system },
+                contents: prompt.user
+            }));
+
+            const text = response.text || '';
+            logger.debug({ rawResponse: text }, 'Grading AI raw response');
+
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
+            return parseAnswerGrading(text);
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during answer grading');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
+    async suggestKnowledgeTags(input: TagSuggestionInput): Promise<TagSuggestionResult> {
+        const prompt = generateTagSuggestRequest(input);
+
+        logger.info({
+            provider: 'Gemini',
+            subject: input.subject,
+            allowedTagCount: input.allowedTags.length,
+        }, 'Tag Suggestion Request');
+
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                config: { systemInstruction: prompt.system },
+                contents: prompt.user
+            }));
+
+            const text = response.text || '';
+            logger.debug({ rawResponse: text }, 'Tag suggestion AI raw response');
+
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
+            return parseTagSuggestion(text, input.allowedTags);
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during tag suggestion');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
+    async generateFigureSvg(imageBase64: string, mimeType: string, questionText?: string | null): Promise<FigureResult> {
+        const prompt = generateFigureRequest(questionText);
+        logger.info({ provider: 'Gemini', model: this.modelName, imageSize: imageBase64.length }, 'Figure SVG Request');
+
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                config: { systemInstruction: prompt.system },
+                contents: [
+                    { text: prompt.user },
+                    { inlineData: { data: imageBase64, mimeType } },
+                ],
+            }));
+
+            const text = response.text || '';
+            logger.debug({ rawResponse: text }, 'Figure SVG AI raw response');
+
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
+            return parseFigure(this.extractTag(text, "has_figure"), this.extractTag(text, "figure_svg"));
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during figure SVG generation');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
+    async fixLatex(input: LatexFixInput): Promise<LatexFixResult> {
+        const prompt = generateLatexFixRequest(input);
+        logger.info({ provider: 'Gemini', model: this.modelName, fields: Object.keys(input) }, 'LaTeX Fix Request');
+
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                config: { systemInstruction: prompt.system },
+                contents: [{ text: prompt.user }],
+            }));
+
+            const text = response.text || '';
+            logger.debug({ rawResponse: text }, 'LaTeX fix AI raw response');
+
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
+            return parseLatexFix(text, input);
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during LaTeX fix');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
+    async generateSvgAnimation(questionText: string, answerText: string, analysis: string, figureSvg?: string | null, language: 'zh' | 'en' = 'zh'): Promise<string | null> {
+        const prompt = generateSvgAnimationRequest(questionText, answerText, analysis, figureSvg, language);
+        logger.info({ provider: 'Gemini', model: this.modelName, questionLength: questionText.length }, 'SVG Animation Request');
+
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                config: { systemInstruction: prompt.system },
+                contents: [{ text: prompt.user }],
+            }));
+
+            const text = response.text || '';
+            logger.debug({ rawResponse: text }, 'SVG animation AI raw response');
+
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
+            return sanitizeSvgAnimation(this.extractTag(text, "svg_animation") || text);
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during SVG animation generation');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
+    async generateSvgNarration(questionText: string, answerText: string, analysis: string, svgAnimation: string, language: 'zh' | 'en' = 'zh'): Promise<NarrationSegment[] | null> {
+        const prompt = generateSvgNarrationRequest(questionText, answerText, analysis, svgAnimation, language);
+        logger.info({ provider: 'Gemini', model: this.modelName, svgLength: svgAnimation.length }, 'SVG Narration Request');
+
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                config: { systemInstruction: prompt.system },
+                contents: [{ text: prompt.user }],
+            }));
+
+            const text = response.text || '';
+            logger.debug({ rawResponse: text }, 'SVG narration AI raw response');
+
+            if (!text) throw new Error(response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? AI_OUTPUT_TRUNCATED : "Empty response from AI");
+            return parseNarration(this.extractTag(text, "narration") || text);
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during SVG narration generation');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
     private handleError(error: unknown) {
         logger.error({ error }, 'Gemini error');
         if (error instanceof Error) {
+            if (error.message === AI_OUTPUT_TRUNCATED || error.message.startsWith('AI_RESPONSE_ERROR:')) {
+                throw error;
+            }
             const msg = error.message.toLowerCase();
             if (msg.includes('fetch failed') || msg.includes('network') || msg.includes('connect')) {
-                throw new Error("AI_CONNECTION_FAILED");
+                throw new Error("AI_CONNECTION_FAILED", { cause: error });
             }
             // 超时错误 (包括 408 Request Timeout)
             if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('aborted') || msg.includes('408')) {
-                throw new Error("AI_TIMEOUT_ERROR");
+                throw new Error("AI_TIMEOUT_ERROR", { cause: error });
             }
             // 配额/频率限制错误
             if (msg.includes('quota') || msg.includes('额度') || msg.includes('rate limit') || msg.includes('429') || msg.includes('too many')) {
-                throw new Error("AI_QUOTA_EXCEEDED");
+                throw new Error("AI_QUOTA_EXCEEDED", { cause: error });
             }
             // 权限/403 错误
             if (msg.includes('403') || msg.includes('forbidden') || msg.includes('permission')) {
-                throw new Error("AI_PERMISSION_DENIED");
+                throw new Error("AI_PERMISSION_DENIED", { cause: error });
             }
             // 资源不存在/404 错误
             if (msg.includes('404') || msg.includes('not found') || msg.includes('does not exist')) {
-                throw new Error("AI_NOT_FOUND");
+                throw new Error("AI_NOT_FOUND", { cause: error });
             }
             // 服务器错误 (500/502/503/504)
             if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504') ||
                 msg.includes('无可用') || msg.includes('overloaded') || msg.includes('unavailable')) {
-                throw new Error("AI_SERVICE_UNAVAILABLE");
+                throw new Error("AI_SERVICE_UNAVAILABLE", { cause: error });
             }
             if (msg.includes('invalid json') || msg.includes('parse')) {
-                throw new Error("AI_RESPONSE_ERROR");
+                throw new Error("AI_RESPONSE_ERROR", { cause: error });
             }
             if (msg.includes('api key') || msg.includes('unauthorized') || msg.includes('401')) {
-                throw new Error("AI_AUTH_ERROR");
+                throw new Error("AI_AUTH_ERROR", { cause: error });
             }
         }
-        throw new Error("AI_UNKNOWN_ERROR");
+        throw new Error("AI_UNKNOWN_ERROR", { cause: error });
     }
 }

@@ -4,33 +4,16 @@ import remarkMath from 'remark-math';
 import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import { prepareMarkdownMath } from '@/lib/markdown-math';
 
 interface MarkdownRendererProps {
-    content: string;
+    content?: string | null;
     className?: string;
 }
 
 export function MarkdownRenderer({ content, className = '' }: MarkdownRendererProps) {
-    // Preprocess content to ensure proper paragraph breaks and LaTeX rendering
-    // Convert single line breaks to double line breaks for better readability
-    const processedContent = content
-        // First, convert literal \n sequences to actual newlines (fix for AI responses)
-        .replace(/\\n/g, '\n')
-        // Preserve existing double line breaks with a unique marker
-        .replace(/\n\n/g, '\n\n###PRESERVE_BREAK###\n\n')
-        // Convert patterns that should be new paragraphs
-        .replace(/([。！？；])\n(?!\n)/g, '$1\n\n')  // Chinese punctuation followed by single newline
-        .replace(/([.!?;])\s*\n(?!\n)/g, '$1\n\n')   // English punctuation followed by single newline
-        .replace(/(\d+\))\s*\n(?!\n)/g, '$1\n\n')    // Numbered items like (1), (2)
-        .replace(/([\u2460-\u2473])\s*\n(?!\n)/g, '$1\n\n')  // Circled numbers ①②③
-        // Fix: Remove indentation for lines starting with circled numbers or (n) to prevent code block rendering
-        .replace(/\n\s+([\u2460-\u2473])/g, '\n$1')
-        .replace(/\n\s+(\d+\))/g, '\n$1')
-        // Fix LaTeX formulas: Ensure proper spacing around $ delimiters
-        // This handles cases where $ might be directly adjacent to text
-        .replace(/([^\s$])(\$[^$]+\$)([^\s$])/g, '$1 $2 $3')
-        // Restore preserved double line breaks (use flexible whitespace matching)
-        .replace(/\s*###PRESERVE_BREAK###\s*/g, '\n\n');
+    // 公式片段先保护起来，只整理公式以外的文字（见 markdown-math.ts）
+    const processedContent = prepareMarkdownMath(content);
 
     return (
         <div className={`markdown-content overflow-x-auto min-w-0 ${className}`}>
@@ -49,16 +32,13 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
                     blockquote: ({ node, ...props }) => (
                         <blockquote className="border-l-4 border-primary pl-4 italic my-4 text-muted-foreground" {...props} />
                     ),
-                    code: ({ node, inline, className, children, ...props }: any) => {
-                        if (inline) {
-                            return <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono text-foreground" {...props}>{children}</code>;
-                        }
-                        return (
-                            <code className="block bg-muted p-4 rounded-lg overflow-x-auto my-3 font-mono text-sm" {...props}>
-                                {children}
-                            </code>
-                        );
-                    },
+                    // react-markdown 10 不再传 inline：code 统一按行内样式，代码块样式由 pre 提供并重置内部 code
+                    code: ({ node, className, ...props }) => (
+                        <code className={`bg-muted px-1.5 py-0.5 rounded text-sm font-mono ${className ?? ''}`} {...props} />
+                    ),
+                    pre: ({ node, ...props }) => (
+                        <pre className="bg-muted p-4 rounded-lg overflow-x-auto my-3 font-mono text-sm [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none" {...props} />
+                    ),
                     table: ({ node, ...props }) => (
                         <div className="overflow-x-auto my-4">
                             <table className="min-w-full border-collapse border border-border" {...props} />
@@ -70,7 +50,7 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
                     td: ({ node, ...props }) => (
                         <td className="border border-border px-4 py-2" {...props} />
                     ),
-                    strong: ({ node, ...props }) => <strong className="font-bold text-foreground" {...props} />,
+                    strong: ({ node, ...props }) => <strong className="font-bold" {...props} />,
                     em: ({ node, ...props }) => <em className="italic" {...props} />,
                 }}
             >

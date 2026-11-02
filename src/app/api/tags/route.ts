@@ -9,6 +9,7 @@ import { getServerSession } from 'next-auth';
 import { prisma } from '@/lib/prisma';
 import { authOptions } from '@/lib/auth';
 import { createLogger } from '@/lib/logger';
+import type { KnowledgeTag } from '@prisma/client';
 
 const logger = createLogger('api:tags');
 
@@ -23,7 +24,7 @@ interface TagTreeNode {
 /**
  * 构建标签树
  */
-function buildTagTree(tags: any[]): TagTreeNode[] {
+function buildTagTree(tags: KnowledgeTag[]): TagTreeNode[] {
     const tagMap = new Map<string, TagTreeNode>();
     const roots: TagTreeNode[] = [];
 
@@ -55,7 +56,9 @@ function buildTagTree(tags: any[]): TagTreeNode[] {
  * GET /api/tags
  * Query params:
  *   - subject: 学科 (必填, e.g., 'math')
+ *   - tagSet: 标签体系 (可选, 默认 'default')
  *   - flat: 是否返回扁平列表 (可选, 默认 false 返回树)
+ *   - tagSetsOnly: 是否只返回可用标签体系列表 (可选, 默认 false)
  */
 export async function GET(request: NextRequest) {
     try {
@@ -66,7 +69,19 @@ export async function GET(request: NextRequest) {
 
         const { searchParams } = new URL(request.url);
         const subject = searchParams.get('subject');
+        const tagSet = searchParams.get('tagSet') || 'default';
         const flat = searchParams.get('flat') === 'true';
+        const tagSetsOnly = searchParams.get('tagSetsOnly') === 'true';
+
+        // 只查询可用标签体系列表
+        if (tagSetsOnly) {
+            const tagSets = await prisma.knowledgeTag.findMany({
+                where: { isSystem: true },
+                select: { tagSet: true },
+                distinct: ['tagSet'],
+            });
+            return NextResponse.json({ tagSets: tagSets.map(t => t.tagSet) });
+        }
 
         if (!subject) {
             return NextResponse.json({ error: 'Subject is required' }, { status: 400 });
@@ -76,6 +91,7 @@ export async function GET(request: NextRequest) {
         const tags = await prisma.knowledgeTag.findMany({
             where: {
                 subject,
+                tagSet,
                 OR: [
                     { isSystem: true },
                     { userId: session.user.id },
@@ -111,6 +127,7 @@ export async function GET(request: NextRequest) {
         if (tags.length > 0) {
             logger.debug({
                 subject,
+                tagSet,
                 totalTags: tags.length,
                 systemTags: tags.filter(t => t.isSystem).length,
                 userTags: tags.filter(t => !t.isSystem).length,

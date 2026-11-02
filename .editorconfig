@@ -1,0 +1,12 @@
+# 编辑器通用设置；缩进沿用各文件现有风格，这里不统一规定
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+# Markdown 行尾两个空格表示换行，不自动删除
+trim_trailing_whitespace = false

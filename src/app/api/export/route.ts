@@ -4,6 +4,12 @@ import { authOptions } from "@/lib/auth";
 import { getServerSession } from "next-auth";
 import { unauthorized, internalError, forbidden } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
+import { getAppTimeZone } from "@/lib/config";
+import { formatDateTime } from "@/lib/date-time";
+import { normalizeFigureAlign, normalizeFigureScale } from "@/lib/figure-scale";
+import { normalizeCustomAnswerSpacePx } from "@/lib/exam-answer-space";
+import { exportSpeeches } from "@/lib/tts/speech-cache";
+import { sortTagsByParent } from "@/lib/tag-hierarchy";
 
 const logger = createLogger('api:export');
 
@@ -26,7 +32,7 @@ export async function GET(req: Request) {
     const exportAll = searchParams.get('all') === 'true';
 
     // 只有管理员可以导出全部数据
-    if (exportAll && (session.user as any).role !== 'admin') {
+    if (exportAll && session.user.role !== 'admin') {
         return forbidden("Admin role required");
     }
 
@@ -37,6 +43,12 @@ export async function GET(req: Request) {
             where: userFilter,
         });
 
+        // 系统标签按 tagSet 分组导出，避免不同体系的系统标签混淆
+        const systemTags = await prisma.knowledgeTag.findMany({
+            where: {
+                isSystem: true,
+            },
+        });
         const customTags = await prisma.knowledgeTag.findMany({
             where: {
                 ...userFilter,
@@ -61,8 +73,25 @@ export async function GET(req: Request) {
             where: userFilter,
         });
 
+        const examPapers = await prisma.examPaper.findMany({
+            where: userFilter,
+            include: {
+                questions: { orderBy: { order: 'asc' } },
+            },
+        });
+
+        const paperGroups = await prisma.paperGroup.findMany({
+            where: userFilter,
+        });
+
+        // 与动画讲解文字一致的云端语音（MP3），导入后无需重新合成
+        const ttsSpeeches = await exportSpeeches(errorItems.flatMap((item) => [
+            ...(item.svgAnimation ? [{ language: 'zh' as const, svg: item.svgAnimation }] : []),
+            ...(item.svgAnimationEn ? [{ language: 'en' as const, svg: item.svgAnimationEn }] : []),
+        ]));
+
         const exportData = {
-            version: 1,
+            version: 4,
             exportedAt: new Date().toISOString(),
             scope: exportAll ? 'all' : 'user',
             user: {
@@ -71,29 +100,57 @@ export async function GET(req: Request) {
                 name: user.name,
                 educationStage: user.educationStage,
                 enrollmentYear: user.enrollmentYear,
+                gradeRecognitionMode: user.gradeRecognitionMode,
+                fixedGradeSemester: user.fixedGradeSemester,
                 role: user.role,
+                confirmBeforeImport: user.confirmBeforeImport,
+                questionDuplicateThreshold: user.questionDuplicateThreshold,
+                masteryThreshold: user.masteryThreshold,
+                enableGeogebra: user.enableGeogebra,
+                enableSvgAnimation: user.enableSvgAnimation,
+                themePreference: user.themePreference,
             },
             subjects,
-            customTags,
-            errorItems,
+            systemTags: sortTagsByParent(systemTags),
+            customTags: sortTagsByParent(customTags),
+            errorItems: errorItems.map((item) => ({
+                ...item,
+                figureScale: normalizeFigureScale(item.figureScale),
+                figureAlign: normalizeFigureAlign(item.figureAlign),
+                answerSpacePx: normalizeCustomAnswerSpacePx(item.answerSpacePx),
+            })),
             reviewSchedules,
             practiceRecords,
+            examPapers: examPapers.map((paper) => ({
+                ...paper,
+                questions: paper.questions.map((question) => ({
+                    ...question,
+                    figureScale: normalizeFigureScale(question.figureScale),
+                    figureAlign: normalizeFigureAlign(question.figureAlign),
+                    answerSpacePx: normalizeCustomAnswerSpacePx(question.answerSpacePx),
+                })),
+            })),
+            paperGroups,
+            ttsSpeeches,
         };
 
         logger.info({
             userId: user.id,
             scope: exportAll ? 'all' : 'user',
             subjectsCount: subjects.length,
+            systemTagsCount: systemTags.length,
             customTagsCount: customTags.length,
             errorItemsCount: errorItems.length,
             reviewSchedulesCount: reviewSchedules.length,
             practiceRecordsCount: practiceRecords.length,
+            examPapersCount: examPapers.length,
+            ttsSpeechesCount: ttsSpeeches.length,
         }, 'Data export completed');
 
         const jsonString = JSON.stringify(exportData, null, 2);
         const filename = exportAll
-            ? `wrong-notebook-export-all-${new Date().toISOString().slice(0, 10)}.json`
-            : `wrong-notebook-export-${new Date().toISOString().slice(0, 10)}.json`;
+            ? `wrong-notebook-export-all-${formatDateTime(new Date(), 'yyyy-MM-dd', getAppTimeZone())}.json`
+            : `wrong-notebook-export-${formatDateTime(new Date(), 'yyyy-MM-dd', getAppTimeZone())}.json`;
 
         return new NextResponse(jsonString, {
             headers: {

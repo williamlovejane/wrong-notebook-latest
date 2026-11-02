@@ -1,13 +1,9 @@
 import { NextResponse } from 'next/server';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { getAppVersion } from '@/lib/app-version';
+
+// 版本来自运行时环境变量，不能在构建时静态化
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  try {
-    const packageJsonPath = join(process.cwd(), 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return NextResponse.json({ version: packageJson.version });
-  } catch {
-    return NextResponse.json({ version: 'unknown' });
-  }
+  return NextResponse.json({ version: getAppVersion() });
 }

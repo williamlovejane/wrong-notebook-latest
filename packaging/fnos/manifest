@@ -1,0 +1,15 @@
+appname               = wrongnotebook
+version               = 0.0.0
+display_name          = 错题本
+desc                  = AI 错题本：上传题目图片，由 AI 识别、解析并标注知识点，支持错题管理、练习、统计与打印导出（端口 39300）
+platform              = x86
+source                = thirdparty
+maintainer            = margrop
+maintainer_url        = https://github.com/margrop/wrong-notebook
+distributor           = margrop
+distributor_url       = https://github.com/margrop/wrong-notebook
+desktop_uidir         = ui
+desktop_applaunchname = wrongnotebook.Application
+service_port          = 39300
+ctl_stop              = true
+install_dep_apps      = nodejs_v24

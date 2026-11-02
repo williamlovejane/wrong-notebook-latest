@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
         findUnique: vi.fn(),
         update: vi.fn(),
     },
+    mockPrismaErrorItem: {
+        updateMany: vi.fn(async () => ({ count: 0 })),
+    },
     mockSession: {
         user: {
             email: 'test@example.com',
@@ -22,6 +25,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/prisma', () => ({
     prisma: {
         user: mocks.mockPrismaUser,
+        $transaction: vi.fn((fn: (tx: unknown) => unknown) => fn({ user: mocks.mockPrismaUser, errorItem: mocks.mockPrismaErrorItem })),
     },
 }));
 
@@ -41,6 +45,7 @@ vi.mock('bcryptjs', () => ({
 
 // Import after mocks
 import { GET, PATCH } from '@/app/api/user/route';
+import type { Session } from 'next-auth';
 
 describe('/api/user', () => {
     beforeEach(() => {
@@ -78,6 +83,134 @@ describe('/api/user', () => {
     });
 
     describe('PATCH /api/user', () => {
+        it('应该更新「导入前人工确认」偏好，包括关闭', async () => {
+            mocks.mockPrismaUser.update.mockResolvedValue({ confirmBeforeImport: false });
+
+            const request = new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ confirmBeforeImport: false }),
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            const response = await PATCH(request);
+
+            expect(response.status).toBe(200);
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].data).toEqual({ confirmBeforeImport: false });
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].select.confirmBeforeImport).toBe(true);
+        });
+
+        it('应该更新「GeoGebra 动态演示」偏好，并在响应中返回该字段', async () => {
+            mocks.mockPrismaUser.update.mockResolvedValue({ enableGeogebra: true });
+
+            const request = new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ enableGeogebra: true }),
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            const response = await PATCH(request);
+
+            expect(response.status).toBe(200);
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].data).toEqual({ enableGeogebra: true });
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].select.enableGeogebra).toBe(true);
+        });
+
+        it('应该更新「SVG 动画讲解」偏好，并在响应中返回该字段', async () => {
+            mocks.mockPrismaUser.update.mockResolvedValue({ enableSvgAnimation: false });
+
+            const request = new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ enableSvgAnimation: false }),
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            const response = await PATCH(request);
+
+            expect(response.status).toBe(200);
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].data).toEqual({ enableSvgAnimation: false });
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].select.enableSvgAnimation).toBe(true);
+        });
+
+        it('应该更新界面主题偏好，并在响应中返回该字段', async () => {
+            mocks.mockPrismaUser.update.mockResolvedValue({ themePreference: 'dark' });
+
+            const response = await PATCH(new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ themePreference: 'dark' }),
+                headers: { 'Content-Type': 'application/json' },
+            }));
+
+            expect(response.status).toBe(200);
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].data).toEqual({ themePreference: 'dark' });
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].select.themePreference).toBe(true);
+        });
+
+        it('应该拒绝不支持的主题偏好', async () => {
+            const response = await PATCH(new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ themePreference: 'purple' }),
+                headers: { 'Content-Type': 'application/json' },
+            }));
+
+            expect(response.status).toBe(400);
+            expect(mocks.mockPrismaUser.update).not.toHaveBeenCalled();
+        });
+
+        it('应该更新已掌握阈值，并按新阈值同步错题的 masteryLevel', async () => {
+            mocks.mockPrismaUser.update.mockResolvedValue({ id: 'user-1', masteryThreshold: 80 });
+
+            const response = await PATCH(new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ masteryThreshold: 80 }),
+                headers: { 'Content-Type': 'application/json' },
+            }));
+
+            expect(response.status).toBe(200);
+            expect(await response.json()).toEqual({ masteryThreshold: 80 });
+            expect(mocks.mockPrismaUser.update.mock.calls[0][0].data).toEqual({ masteryThreshold: 80 });
+            const syncCalls = mocks.mockPrismaErrorItem.updateMany.mock.calls as unknown as [{ where: unknown; data: unknown }][];
+            expect(syncCalls.map(([args]) => args)).toEqual(expect.arrayContaining([
+                expect.objectContaining({ where: { AND: expect.arrayContaining([{ userId: 'user-1', masteryLevel: { not: 2 } }, expect.objectContaining({ masteryProbability: { gte: 0.8 } })]) }, data: { masteryLevel: 2 } }),
+                expect.objectContaining({ data: { masteryLevel: 1 } }),
+            ]));
+        });
+
+        it('未修改已掌握阈值时不同步 masteryLevel', async () => {
+            mocks.mockPrismaUser.update.mockResolvedValue({ id: 'user-1', name: 'New Name' });
+
+            await PATCH(new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ name: 'New Name' }),
+                headers: { 'Content-Type': 'application/json' },
+            }));
+
+            expect(mocks.mockPrismaErrorItem.updateMany).not.toHaveBeenCalled();
+        });
+
+        it.each([0, 101, 50.5, '60'])('已掌握阈值为 %s 时拒绝更新', async (value) => {
+            const response = await PATCH(new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ masteryThreshold: value }),
+                headers: { 'Content-Type': 'application/json' },
+            }));
+
+            expect(response.status).toBeGreaterThanOrEqual(400);
+            expect(mocks.mockPrismaUser.update).not.toHaveBeenCalled();
+        });
+
+        it('GeoGebra 偏好不是布尔值时拒绝更新', async () => {
+            const request = new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ enableGeogebra: 'yes' }),
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            const response = await PATCH(request);
+
+            expect(response.status).toBeGreaterThanOrEqual(400);
+            expect(mocks.mockPrismaUser.update).not.toHaveBeenCalled();
+        });
+
         it('应该成功更新用户名', async () => {
             const updatedUser = {
                 name: 'New Name',
@@ -365,7 +498,7 @@ describe('/api/user', () => {
                     name: 'No Email User',
                 },
                 expires: '2025-12-31',
-            } as any);
+            } as unknown as Session);
 
             const response = await GET();
             const data = await response.json();
@@ -405,6 +538,27 @@ describe('/api/user', () => {
             // 验证密码被哈希
             const updateCall = mocks.mockPrismaUser.update.mock.calls[0][0];
             expect(updateCall.data.password).toBe('hashed_newAdminPassword123');
+        });
+
+        it('管理员不能把密码改回默认密码', async () => {
+            const { getServerSession } = await import('next-auth');
+            vi.mocked(getServerSession).mockResolvedValue({
+                user: { email: 'admin@localhost', name: 'Admin', role: 'admin' },
+                expires: '2025-12-31',
+            });
+
+            const request = new Request('http://localhost/api/user', {
+                method: 'PATCH',
+                body: JSON.stringify({ password: '123456' }),
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+            const response = await PATCH(request);
+            const data = await response.json();
+
+            expect(response.status).toBe(400);
+            expect(data.message).toBe('New password must not be the default password');
+            expect(mocks.mockPrismaUser.update).not.toHaveBeenCalled();
         });
 
         it('普通用户可以修改密码', async () => {

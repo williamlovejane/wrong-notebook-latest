@@ -41,12 +41,14 @@ vi.mock('next-auth', () => ({
 vi.mock('@/lib/auth', () => ({
     authOptions: {},
 }));
+vi.mock('@/lib/config', () => ({ getAppTimeZone: () => 'Asia/Shanghai' }));
 
 // Import after mocks
 import { GET as GET_PRACTICE_STATS } from '@/app/api/stats/practice/route';
 import { DELETE as DELETE_PRACTICE_STATS } from '@/app/api/stats/practice/clear/route';
 import { DELETE as DELETE_ERROR_ITEMS } from '@/app/api/error-items/clear/route';
 import { getServerSession } from 'next-auth';
+import type { Session } from 'next-auth';
 
 describe('/api/stats', () => {
     beforeEach(() => {
@@ -55,6 +57,20 @@ describe('/api/stats', () => {
     });
 
     describe('GET /api/stats/practice (获取练习统计)', () => {
+        it('按北京时间归属月份，月末 UTC 时间正确计入下个月', async () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-09-30T16:30:00Z'));
+            mocks.mockPrismaPracticeRecord.groupBy.mockResolvedValue([]);
+            mocks.mockPrismaPracticeRecord.findMany.mockResolvedValue([{ createdAt: new Date('2026-09-30T16:01:00Z'), isCorrect: true, difficulty: 'medium' }]);
+            try {
+                const response = await GET_PRACTICE_STATS();
+                expect(response.status).toBe(200);
+                expect((await response.json()).activityStats.at(-1)).toMatchObject({ date: '2026-10', total: 1, correct: 1 });
+                expect(mocks.mockPrismaPracticeRecord.findMany.mock.calls[0][0].where.createdAt.gte.toISOString()).toBe('2026-04-30T16:00:00.000Z');
+            } finally {
+                vi.useRealTimers();
+            }
+        });
         it('应该返回练习统计数据', async () => {
             // Mock subject stats
             mocks.mockPrismaPracticeRecord.groupBy.mockResolvedValueOnce([
@@ -80,8 +96,7 @@ describe('/api/stats', () => {
                 .mockResolvedValueOnce(15)
                 .mockResolvedValueOnce(10);
 
-            const request = new Request('http://localhost/api/stats/practice');
-            const response = await GET_PRACTICE_STATS(request);
+            const response = await GET_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -99,8 +114,7 @@ describe('/api/stats', () => {
             mocks.mockPrismaPracticeRecord.groupBy.mockResolvedValueOnce([]);
             mocks.mockPrismaPracticeRecord.count.mockResolvedValue(0);
 
-            const request = new Request('http://localhost/api/stats/practice');
-            const response = await GET_PRACTICE_STATS(request);
+            const response = await GET_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -115,8 +129,7 @@ describe('/api/stats', () => {
                 .mockResolvedValueOnce(100) // total
                 .mockResolvedValueOnce(75);  // correct
 
-            const request = new Request('http://localhost/api/stats/practice');
-            const response = await GET_PRACTICE_STATS(request);
+            const response = await GET_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -130,8 +143,7 @@ describe('/api/stats', () => {
             mocks.mockPrismaPracticeRecord.findMany.mockResolvedValue([]);
             mocks.mockPrismaPracticeRecord.count.mockResolvedValue(0);
 
-            const request = new Request('http://localhost/api/stats/practice');
-            const response = await GET_PRACTICE_STATS(request);
+            const response = await GET_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -142,8 +154,7 @@ describe('/api/stats', () => {
         it('应该拒绝未登录用户', async () => {
             vi.mocked(getServerSession).mockResolvedValue(null);
 
-            const request = new Request('http://localhost/api/stats/practice');
-            const response = await GET_PRACTICE_STATS(request);
+            const response = await GET_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(401);
@@ -154,10 +165,9 @@ describe('/api/stats', () => {
             vi.mocked(getServerSession).mockResolvedValue({
                 user: undefined,
                 expires: '2025-12-31',
-            } as any);
+            } as unknown as Session);
 
-            const request = new Request('http://localhost/api/stats/practice');
-            const response = await GET_PRACTICE_STATS(request);
+            const response = await GET_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(401);
@@ -169,8 +179,7 @@ describe('/api/stats', () => {
                 new Error('Database connection failed')
             );
 
-            const request = new Request('http://localhost/api/stats/practice');
-            const response = await GET_PRACTICE_STATS(request);
+            const response = await GET_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(500);
@@ -182,11 +191,8 @@ describe('/api/stats', () => {
         it('应该成功清除练习记录', async () => {
             mocks.mockPrismaPracticeRecord.deleteMany.mockResolvedValue({ count: 50 });
 
-            const request = new Request('http://localhost/api/stats/practice/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_PRACTICE_STATS(request);
+            const response = await DELETE_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -197,11 +203,8 @@ describe('/api/stats', () => {
         it('应该返回清除的记录数量', async () => {
             mocks.mockPrismaPracticeRecord.deleteMany.mockResolvedValue({ count: 100 });
 
-            const request = new Request('http://localhost/api/stats/practice/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_PRACTICE_STATS(request);
+            const response = await DELETE_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -211,11 +214,8 @@ describe('/api/stats', () => {
         it('应该处理没有记录的情况', async () => {
             mocks.mockPrismaPracticeRecord.deleteMany.mockResolvedValue({ count: 0 });
 
-            const request = new Request('http://localhost/api/stats/practice/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_PRACTICE_STATS(request);
+            const response = await DELETE_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -225,11 +225,8 @@ describe('/api/stats', () => {
         it('应该拒绝未登录用户', async () => {
             vi.mocked(getServerSession).mockResolvedValue(null);
 
-            const request = new Request('http://localhost/api/stats/practice/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_PRACTICE_STATS(request);
+            const response = await DELETE_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(401);
@@ -241,11 +238,8 @@ describe('/api/stats', () => {
                 new Error('Database error')
             );
 
-            const request = new Request('http://localhost/api/stats/practice/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_PRACTICE_STATS(request);
+            const response = await DELETE_PRACTICE_STATS();
             const data = await response.json();
 
             expect(response.status).toBe(500);
@@ -257,11 +251,8 @@ describe('/api/stats', () => {
         it('应该成功清除所有错题', async () => {
             mocks.mockPrismaErrorItem.deleteMany.mockResolvedValue({ count: 30 });
 
-            const request = new Request('http://localhost/api/error-items/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_ERROR_ITEMS(request);
+            const response = await DELETE_ERROR_ITEMS();
             const data = await response.json();
 
             expect(response.status).toBe(200);
@@ -271,11 +262,8 @@ describe('/api/stats', () => {
         it('应该只清除当前用户的错题', async () => {
             mocks.mockPrismaErrorItem.deleteMany.mockResolvedValue({ count: 10 });
 
-            const request = new Request('http://localhost/api/error-items/clear', {
-                method: 'DELETE',
-            });
 
-            await DELETE_ERROR_ITEMS(request);
+            await DELETE_ERROR_ITEMS();
 
             expect(mocks.mockPrismaErrorItem.deleteMany).toHaveBeenCalledWith({
                 where: { userId: 'user-123' },
@@ -285,11 +273,8 @@ describe('/api/stats', () => {
         it('应该拒绝未登录用户', async () => {
             vi.mocked(getServerSession).mockResolvedValue(null);
 
-            const request = new Request('http://localhost/api/error-items/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_ERROR_ITEMS(request);
+            const response = await DELETE_ERROR_ITEMS();
             const data = await response.json();
 
             expect(response.status).toBe(401);
@@ -300,13 +285,10 @@ describe('/api/stats', () => {
             vi.mocked(getServerSession).mockResolvedValue({
                 user: undefined,
                 expires: '2025-12-31',
-            } as any);
+            } as unknown as Session);
 
-            const request = new Request('http://localhost/api/error-items/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_ERROR_ITEMS(request);
+            const response = await DELETE_ERROR_ITEMS();
             const data = await response.json();
 
             expect(response.status).toBe(401);
@@ -318,11 +300,8 @@ describe('/api/stats', () => {
                 new Error('Database error')
             );
 
-            const request = new Request('http://localhost/api/error-items/clear', {
-                method: 'DELETE',
-            });
 
-            const response = await DELETE_ERROR_ITEMS(request);
+            const response = await DELETE_ERROR_ITEMS();
             const data = await response.json();
 
             expect(response.status).toBe(500);

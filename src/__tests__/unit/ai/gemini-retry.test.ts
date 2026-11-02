@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock dependencies
 vi.mock('@google/genai', () => {
@@ -27,7 +27,8 @@ vi.mock('@/lib/config', () => ({
     })),
 }));
 
-vi.mock('@/lib/ai/schema', () => ({
+vi.mock('@/lib/ai/schema', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/ai/schema')>()),
     safeParseParsedQuestion: vi.fn((data) => ({ success: true, data })),
 }));
 
@@ -35,6 +36,7 @@ vi.mock('@/lib/ai/schema', () => ({
 vi.mock('@/lib/ai/tag-service', () => ({
     getMathTagsFromDB: vi.fn().mockResolvedValue([]),
     getTagsFromDB: vi.fn().mockResolvedValue([]),
+    prefetchSubjectTags: vi.fn(() => Promise.resolve({})),
 }));
 
 import { GeminiProvider } from '@/lib/ai/gemini-provider';

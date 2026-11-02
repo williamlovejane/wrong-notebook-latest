@@ -9,12 +9,15 @@
  * - Pretty formatted output with colors (development)
  * - Configurable log levels via LOG_LEVEL env var
  * - Module-based child loggers
+ * - 管理员开启调试模式后，所有级别的日志额外写入调试日志缓冲区（见 debug-log.ts）
  *
  * Usage:
  *   logger.info({ userId: 123 }, 'User logged in');
  *   logger.error({ error }, 'Failed to process request');
  *   logger.debug({ data }, 'Debug information');
  */
+
+import { recordDebugLog } from './debug-log';
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
@@ -118,7 +121,7 @@ function formatPrettyLog(
   const levelLabel = LEVEL_LABELS[level];
 
   // Extract module from context
-  const module = baseContext.module || context.module || '';
+  const moduleName = baseContext.module || context.module || '';
 
   // Merge and filter context (exclude env, module which are shown separately)
   const mergedContext = { ...baseContext, ...context };
@@ -128,8 +131,8 @@ function formatPrettyLog(
   // Build the main line
   let output = `${COLORS.dim}[${time}]${COLORS.reset} ${levelColor}${levelLabel}${COLORS.reset}`;
 
-  if (module) {
-    output += ` ${COLORS.module}(${module})${COLORS.reset}`;
+  if (moduleName) {
+    output += ` ${COLORS.module}(${moduleName})${COLORS.reset}`;
   }
 
   output += `: ${message}`;
@@ -152,8 +155,6 @@ function createLogFunction(level: LogLevel, baseContext: LogContext = {}): (ctx:
   const currentLevel = getLogLevel();
 
   return (ctx: LogContext | string, msg?: string) => {
-    if (levelNum < currentLevel) return;
-
     const timestamp = new Date();
     let context: LogContext;
     let message: string;
@@ -165,6 +166,11 @@ function createLogFunction(level: LogLevel, baseContext: LogContext = {}): (ctx:
       context = ctx;
       message = msg || '';
     }
+
+    // 调试模式下不受 LOG_LEVEL 限制，debug、trace 级别也记录
+    recordDebugLog(level, { ...baseContext, ...context }, message, timestamp);
+
+    if (levelNum < currentLevel) return;
 
     if (isPrettyMode) {
       // Pretty formatted output for development
@@ -209,8 +215,8 @@ function createLogFunction(level: LogLevel, baseContext: LogContext = {}): (ctx:
 }
 
 function createLoggerInstance(baseContext: LogContext = {}): Logger {
-  const module = baseContext.module || '';
-  const moduleTag = module ? `[${module}]` : '';
+  const moduleName = baseContext.module || '';
+  const moduleTag = moduleName ? `[${moduleName}]` : '';
 
   return {
     trace: createLogFunction('trace', baseContext),
@@ -223,6 +229,8 @@ function createLoggerInstance(baseContext: LogContext = {}): Logger {
 
     // Decorative box logging (only in development)
     box: (title: string, content?: string | LogContext, emoji: string = '📋') => {
+      recordDebugLog('info', { ...baseContext, ...(typeof content === 'string' ? { content } : content) }, title);
+
       if (!isPrettyMode) {
         // In production, just log as JSON
         const ctx = typeof content === 'string' ? { content } : (content || {});

@@ -1,11 +1,15 @@
+import { DEFAULT_TIME_ZONE, getCalendarDate } from './date-time';
+
 export function calculateGrade(
     educationStage: string,
     enrollmentYear: number,
     currentDate: Date = new Date(),
-    language: 'zh' | 'en' = 'en'
+    language: 'zh' | 'en' = 'en',
+    timeZone = DEFAULT_TIME_ZONE,
 ): string {
-    const currentYear = currentDate.getFullYear();
-    const currentMonth = currentDate.getMonth() + 1; // 1-12
+    const calendarDate = getCalendarDate(currentDate, timeZone);
+    const currentYear = calendarDate.getFullYear();
+    const currentMonth = calendarDate.getMonth() + 1; // 1-12
 
     let gradeLevel = currentYear - enrollmentYear;
     let semesterKey = "2nd"; // 1st or 2nd

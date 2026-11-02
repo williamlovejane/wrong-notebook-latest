@@ -8,27 +8,60 @@ on:
   pull_request:
     branches: [main]
 
+# 默认只读；需要写权限的 Job（如推送镜像）单独声明
+permissions:
+  contents: read
+
 jobs:
+  publication-check:
+    runs-on: ubuntu-latest
+    # 只在 GitHub 上运行；Gitea 读取 main 时会回退到本目录，需跳过
+    if: github.server_url == 'https://github.com'
+    name: Public History Check
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Check public history before continuing CI
+        run: |
+          python3 -m unittest discover -s tests/publication -v
+          python3 scripts/check-public-history.py HEAD
+
+  windows-signing-check:
+    name: Windows Signature Validation
+    needs: publication-check
+    if: "!startsWith(github.ref, 'refs/tags/')"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: 检查签名文件验证与异常拦截
+        shell: pwsh
+        run: ./tests/packaging/test-windows-signatures.ps1
+
   # ============================================
   # 测试阶段（仅 main 分支 push 或 PR）
   # ============================================
   unit-test:
+    needs: publication-check
     runs-on: ubuntu-latest
     name: Unit Tests
     # 只在非 tag push 时运行测试
     if: "!startsWith(github.ref, 'refs/tags/')"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
 
       - name: Run unit tests
         run: npm run test:unit
@@ -36,19 +69,20 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
     name: Integration Tests
-    needs: unit-test
+    needs: publication-check
+    if: "!startsWith(github.ref, 'refs/tags/')"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Generate Prisma Client
         run: npx prisma generate
@@ -56,22 +90,76 @@ jobs:
       - name: Run integration tests
         run: npm run test:integration
 
-  build-check:
+  coverage:
     runs-on: ubuntu-latest
-    name: Build Check
-    needs: integration-test
+    name: Test Coverage
+    needs: publication-check
+    if: "!startsWith(github.ref, 'refs/tags/')"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      # 低于 vitest.config.mts 中的覆盖率阈值时失败
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Write coverage summary
+        if: always()
+        run: |
+          node -e '
+          const fs = require("fs");
+          if (!fs.existsSync("coverage/coverage-summary.json")) process.exit(0);
+          const { total } = JSON.parse(fs.readFileSync("coverage/coverage-summary.json", "utf8"));
+          const rows = ["statements", "branches", "functions", "lines"].map((k) => `| ${k} | ${total[k].pct}% | ${total[k].covered}/${total[k].total} |`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, ["### 测试覆盖率（src/lib、src/app/api）", "", "| 指标 | 覆盖率 | 覆盖数 |", "| --- | --- | --- |", ...rows, ""].join("\n"));
+          '
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  build-check:
+    runs-on: ubuntu-latest
+    name: Build Check
+    needs: publication-check
+    if: "!startsWith(github.ref, 'refs/tags/')"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Cache Next.js build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+            nextjs-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
 
       - name: Generate Prisma Client
         run: npx prisma generate
@@ -79,70 +167,111 @@ jobs:
       - name: Build application
         run: npm run build
 
+  docker-build-check:
+    name: Docker Build Check (${{ matrix.arch }})
+    needs: publication-check
+    if: "!startsWith(github.ref, 'refs/tags/')"
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # 使用正式 Dockerfile 验证构建上下文、Alpine 测试及生产构建
+      - name: Build Docker image without publishing
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,scope=docker-${{ matrix.arch }},mode=max
+
   e2e-test:
     runs-on: ubuntu-latest
     name: E2E Tests
-    needs: build-check
+    needs: [unit-test, integration-test, build-check]
     timeout-minutes: 60
-    env:
-      DATABASE_URL: "file:./e2e.db"
-      NEXTAUTH_SECRET: "ci-secret-value-123456"
-      NEXTAUTH_URL: "http://127.0.0.1:3000"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
 
+      - name: Cache Next.js build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/.next/e2e-cache
+          key: e2e-nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            e2e-nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+            e2e-nextjs-${{ runner.os }}-
+
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Install Playwright Browsers
-        run: npx playwright install --with-deps
+        run: npx playwright install --with-deps chromium
 
-      - name: Setup Database
-        run: |
-          npx prisma db push
-          npx prisma db seed
-
-      - name: Build application
-        run: npm run build
-
-      - name: Run Playwright tests
-        run: npx playwright test
+      - name: Run isolated E2E with local model service
+        run: npm run test:e2e
         env:
           CI: true
 
       - name: Upload Playwright Report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
-          path: playwright-report/
+          path: ${{ env.E2E_REPORT_DIR }}
           retention-days: 30
 
   # ============================================
-  # Docker 构建（仅 tag push）
+  # Docker 构建（仅 tag push，原生双架构并行构建后合并多架构 Manifest）
   # ============================================
-  docker-build:
-    runs-on: ubuntu-latest
-    name: Docker Build & Push
-    # 只在 tag 推送时构建镜像
+  docker-build-arch:
+    name: Docker Build (${{ matrix.arch }})
+    # 只在 tag 推送时构建镜像，且须先通过公开历史检查
+    needs: publication-check
     if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       packages: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -150,7 +279,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -160,19 +289,96 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
             type=sha,prefix=sha-
 
-      - name: Set up QEMU (Enable multi-arch)
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+      - name: Build and push Docker image by digest
+        id: build
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+            APP_REVISION=${{ github.sha }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,scope=docker-${{ matrix.arch }},mode=max
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docker-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-build:
+    runs-on: ubuntu-24.04
+    name: Docker Build & Push
+    needs: docker-build-arch
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: docker-digest-*
+          merge-multiple: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
+            type=sha,prefix=sha-
+
+      - name: Create multi-arch manifest list and push
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          tag_args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && tag_args+=(-t "$tag")
+          done <<< "$TAGS"
+          sources=()
+          for digest in *; do
+            sources+=("${IMAGE}@sha256:${digest}")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+
+      - name: Inspect image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"

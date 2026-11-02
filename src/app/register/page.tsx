@@ -1,19 +1,28 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
+import { AuthShell } from "@/components/auth-shell";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { usePageTitle } from "@/lib/page-title";
+import { useTimeZone } from "@/contexts/TimeZoneContext";
+import { formatDateTime } from "@/lib/date-time";
 import { Eye, EyeOff, Loader2, AlertCircle } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
 import { RegisterRequest } from "@/types/api";
+import { toast } from "@/lib/feedback";
+import { frontendLogger } from "@/lib/frontend-logger";
+import { getApiErrorMessage } from "@/lib/error-message";
 
 export default function RegisterPage() {
+    const { timeZone } = useTimeZone();
     const router = useRouter();
-    const { t, language } = useLanguage();
+    const { t } = useLanguage();
+    usePageTitle(t.pageTitle.register);
     const [name, setName] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
@@ -26,20 +35,21 @@ export default function RegisterPage() {
     const [showConfirmPassword, setShowConfirmPassword] = useState(false);
     const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null);
 
-    useEffect(() => {
-        checkRegistrationStatus();
-    }, []);
-
-    const checkRegistrationStatus = async () => {
+    const checkRegistrationStatus = useCallback(async () => {
         try {
             const res = await fetch("/api/register/status");
             const data = await res.json();
             setAllowRegistration(data.allowRegistration);
         } catch (error) {
-            console.error("Failed to check registration status", error);
-            setAllowRegistration(true); // 默认允许
+            frontendLogger.error('[Register]', 'Failed to check registration status', { error });
+            setAllowRegistration(false); // 无法确认时按关闭处理，提交时服务端仍会校验
         }
-    };
+    }, []);
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面或条件变化时加载，请求前后更新加载状态和结果
+        checkRegistrationStatus();
+    }, [checkRegistrationStatus]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -54,7 +64,7 @@ export default function RegisterPage() {
         }
 
         try {
-            await apiClient.post<any, RegisterRequest>("/api/register", {
+            await apiClient.post<unknown, RegisterRequest>("/api/register", {
                 name,
                 email,
                 password,
@@ -62,12 +72,14 @@ export default function RegisterPage() {
                 enrollmentYear: parseInt(enrollmentYear)
             });
 
-            alert(t.auth?.register?.success || 'Registration successful! Please login');
+            toast.success(t.auth?.register?.success || 'Registration successful! Please login');
             router.push("/login");
-        } catch (error: any) {
-            let errorMsg = error.data?.message;
+        } catch (error) {
+            let errorMsg = getApiErrorMessage(error);
             if (errorMsg === 'User with this email already exists') {
                 errorMsg = t.auth?.register?.emailExists || errorMsg;
+            } else if (errorMsg === 'Too many requests') {
+                errorMsg = t.auth?.register?.tooManyAttempts || errorMsg;
             } else {
                 errorMsg = errorMsg || (t.auth?.register?.failed || 'Registration failed');
             }
@@ -80,17 +92,17 @@ export default function RegisterPage() {
     // 加载中状态
     if (allowRegistration === null) {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
+            <AuthShell>
+                <div className="flex justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>
+            </AuthShell>
         );
     }
 
     // 注册已禁用
     if (allowRegistration === false) {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-                <Card className="w-full max-w-md">
+            <AuthShell>
+                <Card className="w-full rounded-2xl border-0 shadow-xl shadow-indigo-500/5 ring-1 ring-border">
                     <CardHeader>
                         <CardTitle className="text-2xl text-center">
                             {t.auth?.register?.disabled || 'Registration Disabled'}
@@ -110,13 +122,13 @@ export default function RegisterPage() {
                         </div>
                     </CardContent>
                 </Card>
-            </div>
+            </AuthShell>
         );
     }
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-            <Card className="w-full max-w-md">
+        <AuthShell>
+            <Card className="w-full rounded-2xl border-0 shadow-xl shadow-indigo-500/5 ring-1 ring-border">
                 <CardHeader>
                     <CardTitle className="text-2xl text-center">
                         {t.auth?.register?.title || 'Create an Account'}
@@ -244,13 +256,13 @@ export default function RegisterPage() {
                                 placeholder="YYYY"
                                 required
                                 min={1990}
-                                max={new Date().getFullYear()}
+                                max={Number(formatDateTime(new Date(), 'yyyy', timeZone))}
                             />
                         </div>
                         {error && (
-                            <div className="text-red-500 text-sm text-center">{error}</div>
+                            <div className="rounded-lg bg-destructive/10 px-3 py-2 text-center text-sm text-destructive">{error}</div>
                         )}
-                        <Button type="submit" className="w-full" disabled={loading}>
+                        <Button type="submit" size="lg" className="w-full" disabled={loading}>
                             {loading
                                 ? (t.auth?.register?.registering || 'Registering...')
                                 : (t.auth?.register?.action || 'Register')}
@@ -264,6 +276,6 @@ export default function RegisterPage() {
                     </form>
                 </CardContent>
             </Card>
-        </div>
+        </AuthShell>
     );
 }

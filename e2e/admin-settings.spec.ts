@@ -1,13 +1,14 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './support/fixtures';
+import { ADMIN_PASSWORD } from './helpers';
 
-test('Admin can configure OpenAI settings with multi-instance support', async ({ page }) => {
+test('Admin can configure OpenAI settings with multi-instance support', async ({ page, scenario }) => {
     // 增加测试超时时间
     test.setTimeout(60000);
 
     // 1. Login as Admin
     await page.goto('/login');
     await page.locator('input[name="email"]').fill('admin@localhost');
-    await page.locator('input[name="password"]').fill('123456');
+    await page.locator('input[name="password"]').fill(ADMIN_PASSWORD);
     await page.locator('button[type="submit"]').click();
 
     // Wait for login to complete
@@ -35,12 +36,12 @@ test('Admin can configure OpenAI settings with multi-instance support', async ({
 
     // 6. Fill instance configuration
     const instanceName = '智谱 GLM-4V';
-    const apiKey = 'sk-aaa';
-    const baseURL = 'https://new.xxx.net/v1';
-    const modelName = 'claude-haiku-4.5';
+    const apiKey = 'e2e-dummy-key';
+    const baseURL = scenario.mockBaseURL;
+    const modelName = 'e2e-mock-model';
 
     // Instance Name Input - use the actual placeholder from the component
-    await page.locator('input[placeholder="e.g. 智谱 GLM-4V"]').fill(instanceName);
+    await page.locator('input[placeholder="e.g. GLM-4V"]').fill(instanceName);
 
     // API Key Input associated by placeholder
     await page.locator('input[placeholder="sk-..."]').fill(apiKey);
@@ -49,20 +50,17 @@ test('Admin can configure OpenAI settings with multi-instance support', async ({
     await page.locator('input[placeholder="https://api.openai.com/v1"]').fill(baseURL);
 
     // Model Name Input
-    // Placeholder for OpenAI custom model input is "gpt-4o"
-    await page.locator('input[placeholder="gpt-4o"]').fill(modelName);
+    // Placeholder for OpenAI custom model input is "gpt-6.1-sol"
+    await page.locator('input[placeholder="gpt-6.1-sol"]').fill(modelName);
 
     // 7. Save Settings
-    page.once('dialog', async dialog => {
-        console.log(`Dialog message: ${dialog.message()}`);
-        expect(dialog.message()).toMatch(/设置已保存|Settings saved/);
-        await dialog.accept();
-    });
+    const savedResponse = page.waitForResponse((response) => response.url().endsWith('/api/settings') && response.request().method() === 'POST');
 
     await page.getByRole('button', { name: /保存 AI 设置|Save AI Settings/ }).click();
 
+    expect((await savedResponse).ok()).toBeTruthy();
     // 等待保存完成
-    await page.waitForTimeout(1000);
+    await expect(page.getByRole('status').filter({ hasText: /设置已保存|Settings saved/ })).toBeVisible();
 
     // 8. Verify Persistence
     await page.reload();
@@ -84,5 +82,5 @@ test('Admin can configure OpenAI settings with multi-instance support', async ({
     await expect(page.locator('button[role="combobox"]').first()).toHaveText('OpenAI / Compatible');
     await expect(page.locator('input[placeholder="sk-..."]')).toHaveValue(apiKey);
     await expect(page.locator('input[placeholder="https://api.openai.com/v1"]')).toHaveValue(baseURL);
-    await expect(page.locator('input[placeholder="gpt-4o"]')).toHaveValue(modelName);
+    await expect(page.locator('input[placeholder="gpt-6.1-sol"]')).toHaveValue(modelName);
 });

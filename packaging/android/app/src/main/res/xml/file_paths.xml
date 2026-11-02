@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 拍照上传时相机写入的临时图片 -->
+    <cache-path name="camera" path="camera/" />
+</paths>

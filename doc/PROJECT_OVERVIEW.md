@@ -14,7 +14,7 @@
 | 数据库 | SQLite (Prisma ORM 5.22) |
 | 样式 | Tailwind CSS v4 + Shadcn UI (Radix primitives) |
 | 认证 | NextAuth.js v4 (credentials provider, bcryptjs) |
-| AI | Google Gemini / OpenAI / Azure OpenAI (动态切换) |
+| AI | MiniMax（默认）/ 智谱 GLM / DeepSeek / Kimi / 千问 Qwen / 阶跃星辰 StepFun / 火山引擎豆包 / Anthropic / Azure OpenAI / OpenAI / Google Gemini (动态切换) |
 | 测试 | Vitest (单元/集成) + Playwright (E2E) |
 | 部署 | Docker (standalone output) + Docker Compose |
 | 包管理 | npm |
@@ -31,7 +31,7 @@ wrongNotebook/
 │   │   ├── layout.tsx            # 根布局 (Geist 字体, Providers)
 │   │   ├── globals.css           # 全局样式 (Tailwind)
 │   │   ├── manifest.ts           # PWA manifest
-│   │   ├── middleware.ts         # 认证中间件 (登录保护)
+│   │   ├── proxy.ts              # 登录保护（Next.js 16 的 proxy，原 middleware）
 │   │   ├── login/                # 登录页
 │   │   ├── register/             # 注册页
 │   │   ├── notebooks/            # 错题本列表 + 详情 [id]/
@@ -40,7 +40,6 @@ wrongNotebook/
 │   │   ├── stats/page.tsx        # 数据统计看板
 │   │   ├── practice/             # 智能练习
 │   │   ├── print-preview/        # 导出打印预览
-│   │   ├── latex-test/           # LaTeX 渲染测试
 │   │   └── api/                  # API 路由
 │   │       ├── analyze/route.ts          # POST 图片分析
 │   │       ├── error-items/route.ts      # CRUD + batch-delete + clear + list
@@ -87,6 +86,8 @@ wrongNotebook/
 │   │   │   ├── gemini-provider.ts # Google Gemini Provider
 │   │   │   ├── openai-provider.ts # OpenAI Provider
 │   │   │   ├── azure-provider.ts  # Azure OpenAI Provider
+│   │   │   ├── anthropic-provider.ts  # Anthropic 及兼容接口 Provider
+│   │   │   ├── vendor-presets.ts  # 国产大模型官方渠道预设（复用 OpenAI Provider）
 │   │   │   └── tag-service.ts    # 标签查询服务
 │   │   ├── tag-data/             # 预置知识点标签数据 (按学科)
 │   │   │   ├── index.ts, math.ts, physics.ts, chemistry.ts, biology.ts
@@ -119,7 +120,7 @@ wrongNotebook/
 │   │   ├── unit/                 # 单元测试
 │   │   ├── integration/          # 集成测试
 │   │   └── setup.ts              # 测试环境配置
-│   └── middleware.ts             # 认证中间件
+│   └── proxy.ts                  # 登录保护（原 middleware）
 ├── prisma/                       # 数据库
 │   ├── schema.prisma             # 完整数据模型
 │   ├── seed.ts                   # 种子数据 (管理员 + 标签)
@@ -142,7 +143,7 @@ wrongNotebook/
 ├── docker-compose.yml / .https.yml
 ├── Dockerfile / docker-entrypoint.sh
 ├── next.config.ts                # standalone output, serverExternalPackages
-├── vitest.config.ts              # Vitest 配置
+├── vitest.config.mts             # Vitest 配置
 ├── playwright.config.ts          # Playwright 配置
 ├── eslint.config.mjs             # ESLint 配置
 ├── postcss.config.mjs            # PostCSS 配置
@@ -178,7 +179,7 @@ User (id, email, password, name, role, isActive, educationStage, enrollmentYear)
 用户上传图片 → 图片裁剪 → 图片压缩 (base64)
   → POST /api/analyze (AI分析)
     → 获取用户年级/学科 → 注入标签列表到 prompt
-    → AI Provider (Gemini/OpenAI/Azure) 分析
+    → AI Provider (Gemini/OpenAI/Azure/Anthropic/MiniMax 等) 分析
     → Zod 校验返回数据
     → 返回 ParsedQuestion { questionText, answerText, analysis, subject, knowledgePoints, requiresImage }
   → 用户编辑确认 → POST /api/error-items (保存)
