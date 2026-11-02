@@ -20,6 +20,8 @@ const nextConfig: NextConfig = {
   // 禁止 next dev 自动向 AGENTS.md / CLAUDE.md 写入 agent-rules 段落
   agentRules: false,
   poweredByHeader: false,
+  // 构建宿主仅 ~5.7GB 内存：降低 Turbopack 构建并发，避免系统级 OOM（进程无输出直接退出）
+  experimental: { cpus: 2 },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

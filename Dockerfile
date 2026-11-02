@@ -6,18 +6,19 @@ FROM base AS deps
 # Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
 # 测试与构建需要的系统包放在复制源码之前，源码变化时不必重新下载
 # Use TUNA mirror for Alpine packages (dl-cdn is unreliable from this network)
+# build-base: better-sqlite3 预编译包下载失败时需本地编译（make/g++）
 RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.tuna.tsinghua.edu.cn#g' /etc/apk/repositories \
-    && apk add --no-cache libc6-compat python3 openssl bash
-# Use China mirror for Prisma engines / Node headers (binaries.prisma.sh is unreliable here)
+    && apk add --no-cache libc6-compat python3 openssl bash build-base
+# Use China mirror for Prisma engines / Node headers / native prebuilds (upstream hosts are unreliable here)
 ENV PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
 ENV npm_config_disturl=https://npmmirror.com/mirrors/node/
+ENV npm_config_better_sqlite3_binary_host_mirror=https://registry.npmmirror.com/-/binary/better-sqlite3
 WORKDIR /app
 
 # Install dependencies and generate Prisma Client once; cached until lockfile or schema changes
 COPY package.json package-lock.json ./
 COPY prisma/schema.prisma ./prisma/schema.prisma
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --no-audit --no-fund && npx prisma generate
+RUN npm ci --no-audit --no-fund && npx prisma generate
 
 # Pre-compile runtime scripts and initialize seed database in an isolated stage
 # so code-only changes reuse the cached database layer and BuildKit can run it in parallel.
@@ -45,14 +46,16 @@ RUN npm test -- --testTimeout="${TEST_TIMEOUT_MS}" --hookTimeout="${TEST_TIMEOUT
 # Rebuild the source code only after the checks pass.
 FROM ci AS builder
 
+# 构建宿主内存有限（~5.7GB）：压低 V8 堆促使 GC 先行，避免 Turbopack 构建被系统 OOM
+ENV NODE_OPTIONS="--max-old-space-size=2560"
+
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry
 # Uncomment the following line in case you want to disable telemetry during the build.
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# 挂载 .next/cache 避免将构建缓存写入镜像层；清理 standalone 中被文件追踪带入的源码与重复的 Prisma 副本
-RUN --mount=type=cache,target=/app/.next/cache \
-    npm run build \
+# 清理 standalone 中被文件追踪带入的源码与重复的 Prisma 副本（原版用 cache mount，本机 Docker 未启 BuildKit，去掉）
+RUN npm run build \
     && find .next/standalone -mindepth 1 -maxdepth 1 \
        ! -name 'server.js' ! -name 'package.json' ! -name '.next' ! -name 'node_modules' \
        -exec rm -rf {} + \
@@ -94,7 +97,9 @@ COPY --from=db-builder --chown=nextjs:nodejs /app/scripts/seed-admin.js ./dist-s
 # Copy static assets, config and entrypoint scripts
 COPY public ./public
 COPY --chown=nextjs:nodejs config ./config
-COPY --chown=nextjs:nodejs --chmod=755 docker-entrypoint.sh ./
+# 本机 Docker 无 BuildKit，--chmod 不可用：COPY 后用 chmod 补执行位
+COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
+RUN chmod 755 docker-entrypoint.sh
 COPY --chown=nextjs:nodejs https-server.js ./
 
 # Automatically leverage output traces to reduce image size

@@ -112,11 +112,13 @@ describe("currentSemesterFromProfile 学期推导", () => {
     function withDate(d: Date, fn: () => void) {
         const Orig = globalThis.Date;
         globalThis.Date = class extends realDate {
-            constructor(...args: ConstructorParameters<typeof realDate>) {
+            // args 放宽为 any[]：ConstructorParameters 只给出单参重载，
+            // 其 length 是字面量 1，与 0 比较会被 TS 判为 no overlap
+            constructor(...args: any[]) {
                 if (args.length === 0) {
                     super(d.getTime());
                 } else {
-                    super(...args);
+                    super(...(args as ConstructorParameters<typeof realDate>));
                 }
             }
             static now() {
