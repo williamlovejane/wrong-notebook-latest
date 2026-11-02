@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
-import { BarChart3, BookOpen, CalendarCheck, FileText, LogOut, PlusCircle, Shield } from "lucide-react";
+import { BarChart3, BookOpen, CalendarCheck, Ear, FileText, LogOut, PlusCircle, Shield, SpellCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 /** 登录、注册与打印页不显示导航 */
 const BARE_PATHS = [/^\/login/, /^\/register/, /^\/setup/, /^\/print-preview/, /^\/exams\/[^/]+\/print/];
 
-type NavKey = "home" | "notebooks" | "review" | "stats" | "exams";
+type NavKey = "home" | "notebooks" | "review" | "stats" | "exams" | "dictation" | "yuwen";
 
 interface NavItem {
     key: NavKey;
@@ -36,6 +36,8 @@ const NAV_ITEMS: NavItem[] = [
     { key: "review", href: "/review", icon: CalendarCheck, match: (p) => p.startsWith("/review") },
     { key: "stats", href: "/stats", icon: BarChart3, match: (p) => p.startsWith("/stats") || p.startsWith("/tags") },
     { key: "exams", href: "/exams", icon: FileText, match: (p) => p.startsWith("/exams") },
+    { key: "dictation", href: "/dictation", icon: Ear, match: (p) => p.startsWith("/dictation") },
+    { key: "yuwen", href: "/yuwen", icon: SpellCheck, match: (p) => p.startsWith("/yuwen") },
 ];
 
 /** 全局导航外壳：桌面端顶部导航栏，移动端顶部标题栏 + 底部标签栏 */
@@ -120,7 +122,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="pb-20 md:pb-0">{children}</div>
 
             <nav className="pb-safe fixed inset-x-0 bottom-0 z-40 border-t bg-card/90 backdrop-blur-md md:hidden print:hidden">
-                <div className="grid h-16 grid-cols-5">
+                <div className="grid h-16" style={{ gridTemplateColumns: `repeat(${NAV_ITEMS.length}, minmax(0, 1fr))` }}>
                     {NAV_ITEMS.map((item) => {
                         const active = item.match(pathname);
                         const Icon = item.icon;
