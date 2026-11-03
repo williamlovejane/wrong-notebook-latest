@@ -16,7 +16,7 @@ import {
     DEBUG_NOW_STORAGE_KEY,
     parseDebugNow,
 } from "@/lib/dictation/debug-time";
-import { Loader2, Plus, Trash2, Play, BookOpen, Volume2, Languages, FlaskConical } from "lucide-react";
+import { Loader2, Plus, Trash2, Play, BookOpen, Volume2, Languages, FlaskConical, PenLine, Printer } from "lucide-react";
 
 type Kind = "chinese_char" | "english_word" | "english_sentence";
 
@@ -367,9 +367,27 @@ export default function DictationPage() {
                             </div>
                             <div className="ml-auto flex flex-wrap gap-2">
                                 {(today?.totalDue ?? 0) > 0 ? (
-                                    <Button onClick={() => router.push("/dictation/quiz")}>
-                                        <Play className="mr-2 h-4 w-4" /> 开始复习
-                                    </Button>
+                                    <>
+                                        <Button onClick={() => router.push("/dictation/quiz")}>
+                                            <Play className="mr-2 h-4 w-4" /> 开始复习
+                                        </Button>
+                                        {(today?.byKind?.chinese_char ?? 0) > 0 && (
+                                            <Button
+                                                variant="outline"
+                                                onClick={() =>
+                                                    router.push("/dictation/quiz?mode=handwrite&kind=chinese_char")
+                                                }
+                                            >
+                                                <PenLine className="mr-2 h-4 w-4" /> 手写默写
+                                            </Button>
+                                        )}
+                                        <Button
+                                            variant="outline"
+                                            onClick={() => router.push("/dictation/paper")}
+                                        >
+                                            <Printer className="mr-2 h-4 w-4" /> 出卷考察
+                                        </Button>
+                                    </>
                                 ) : (
                                     <span className="text-sm text-muted-foreground">今天没有到期的内容</span>
                                 )}

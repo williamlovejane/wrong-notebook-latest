@@ -504,6 +504,28 @@ export class GeminiProvider implements AIService {
         }
     }
 
+    async analyzeImageWithPrompt(imageBase64: string, mimeType: string, prompt: string): Promise<string> {
+        logger.info({ provider: 'Gemini', imageSize: imageBase64.length }, 'Image With Prompt Request');
+
+        try {
+            const response = await this.retryOperation(() => this.ai.models.generateContent({
+                model: this.modelName,
+                contents: [
+                    { text: prompt },
+                    { inlineData: { data: imageBase64, mimeType } },
+                ],
+            }));
+
+            const text = response.text || '';
+            if (!text) throw new Error("Empty response from AI");
+            return text;
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during image with prompt');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
     async generateFigureSvg(imageBase64: string, mimeType: string, questionText?: string | null): Promise<FigureResult> {
         const prompt = generateFigureRequest(questionText);
         logger.info({ provider: 'Gemini', model: this.modelName, imageSize: imageBase64.length }, 'Figure SVG Request');

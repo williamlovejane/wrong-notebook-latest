@@ -366,5 +366,11 @@ model ReviewLog {
   promptWord String?  // 本次考察用的词（语文）或句子
   answerText String?  // 用户作答
 
+  mode          String?   // 考察方式：typing（键盘打字，默认）| handwriting（在线手写）| paper_ai（试卷拍照AI判）| paper_manual（试卷人工录入）
+  strokeCorrect Boolean?  // 笔顺是否正确（仅手写模式）
+  batchId       String?   // 出卷批次 ID（试卷模式）；同一次出卷的题目共享
+  promptJson    String?   // 试卷题面快照（拼音/遮蔽词等 JSON），恢复试卷与 AI 判分用
+
   @@index([cardId, reviewedAt])
+  @@index([batchId])
 }

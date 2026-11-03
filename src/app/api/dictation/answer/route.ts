@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { checkAnswer, diffSentence } from "@/lib/dictation/answer";
-import { scheduleAfterReview, describeStage } from "@/lib/dictation/schedule";
+import { applyReviewResult } from "@/lib/dictation/grading";
 import { resolveDebugNow } from "@/lib/dictation/debug-time";
 import type { DictationKind } from "@/lib/dictation/types";
 import { unauthorized, badRequest, notFound, internalError } from "@/lib/api-errors";
@@ -41,29 +41,16 @@ export async function POST(req: Request) {
         const result = checkAnswer(kind, expected, answer);
         // 调试模式下用模拟时间排程，让"任意一天"的复习闭环可测
         const now = resolveDebugNow(req, user.role) ?? new Date();
-        const next = scheduleAfterReview(card.stage, result.correct, now);
 
-        const [updatedCard, updatedLog] = await prisma.$transaction([
-            prisma.reviewCard.update({
-                where: { id: card.id },
-                data: {
-                    stage: next.stage,
-                    status: next.status,
-                    dueAt: next.dueAt,
-                    correctCount: result.correct ? { increment: 1 } : undefined,
-                    wrongCount: result.correct ? undefined : { increment: 1 },
-                    lastReviewedAt: now,
-                },
-            }),
-            prisma.reviewLog.update({
-                where: { id: log.id },
-                data: {
-                    result: result.correct ? "correct" : "wrong",
-                    stageAfter: next.stage,
-                    answerText: answer.slice(0, 500),
-                },
-            }),
-        ]);
+        const updated = await applyReviewResult({
+            cardId: card.id,
+            logId: log.id,
+            stage: card.stage,
+            correct: result.correct,
+            now,
+            mode: "typing",
+            answerText: answer,
+        });
 
         return NextResponse.json({
             correct: result.correct,
@@ -76,15 +63,15 @@ export async function POST(req: Request) {
                     ? diffSentence(expected, answer)
                     : undefined,
             card: {
-                id: updatedCard.id,
-                stage: updatedCard.stage,
-                status: updatedCard.status,
-                dueAt: updatedCard.dueAt,
-                correctCount: updatedCard.correctCount,
-                wrongCount: updatedCard.wrongCount,
-                stageLabel: describeStage(updatedCard.stage, updatedCard.status as any).label,
+                id: updated.id,
+                stage: updated.stage,
+                status: updated.status,
+                dueAt: updated.dueAt,
+                correctCount: updated.correctCount,
+                wrongCount: updated.wrongCount,
+                stageLabel: updated.stageLabel,
             },
-            logId: updatedLog.id,
+            logId: log.id,
         });
     } catch (error) {
         logger.error({ error }, "判分失败");

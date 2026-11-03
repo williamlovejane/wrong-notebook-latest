@@ -6,9 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { BackButton } from "@/components/ui/back-button";
+import { HandwritingPad, type HandwritingPadHandle } from "@/components/dictation/handwriting-pad";
 import { apiClient } from "@/lib/api-client";
 import { DEBUG_NOW_PARAM, DEBUG_NOW_STORAGE_KEY } from "@/lib/dictation/debug-time";
-import { Loader2, Volume2, CheckCircle2, XCircle, ArrowRight } from "lucide-react";
+import type { UserStroke } from "@/lib/dictation/stroke-match";
+import { Loader2, Volume2, CheckCircle2, XCircle, ArrowRight, PenLine } from "lucide-react";
 
 type Kind = "chinese_char" | "english_word" | "english_sentence";
 
@@ -58,6 +60,11 @@ interface AnswerResult {
     expected: string;
     pinyin: string | null;
     promptWord: string | null;
+    /** 手写模式附加字段 */
+    strokeCorrect?: boolean | null;
+    judgedBy?: "stroke" | "ai" | "fallback";
+    recognized?: string;
+    strokeCountOk?: boolean;
     diff?: { word: string; correct: boolean }[];
     card: {
         stage: number;
@@ -94,6 +101,8 @@ function QuizContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const kindFilter = searchParams.get("kind") as Kind | null;
+    /** 手写模式：语文题用田字格作答，笔顺由服务端判定 */
+    const handwrite = searchParams.get("mode") === "handwrite";
 
     const [queue, setQueue] = useState<TodayItem[]>([]);
     const [index, setIndex] = useState(0);
@@ -109,6 +118,10 @@ function QuizContent() {
 
     const inputRef = useRef<HTMLInputElement>(null);
     const spokenFor = useRef<string | null>(null);
+
+    // 手写模式：每个待写格子一个 pad 实例与笔迹缓存
+    const padRefs = useRef<(HandwritingPadHandle | null)[]>([]);
+    const [padStrokes, setPadStrokes] = useState<UserStroke[][]>([]);
 
     const current = queue[index];
 
@@ -162,6 +175,8 @@ function QuizContent() {
         setPrompt(null);
         setResult(null);
         setAnswer("");
+        setPadStrokes([]);
+        padRefs.current = [];
         setQuizToken(null);
         setError(null);
 
@@ -192,8 +207,72 @@ function QuizContent() {
         if (text) speak(text, prompt.ttsLang, prompt.type === "english_sentence" ? 0.85 : 0.9);
     }, [prompt]);
 
+    /** 把各田字格截图横向拼成一张长图，供 AI 整体识别 */
+    const stitchPadImages = async (): Promise<string> => {
+        const sources = padRefs.current.map((p) => p?.toDataUrl() ?? "").filter(Boolean);
+        if (sources.length === 0) return "";
+        const load = (src: string) =>
+            new Promise<HTMLImageElement | null>((resolve) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => resolve(null);
+                img.src = src;
+            });
+        const images = await Promise.all(sources.map(load));
+        if (images.some((img) => !img)) return sources[0];
+        const GAP = 24;
+        const canvas = document.createElement("canvas");
+        canvas.width = 512 * images.length + GAP * (images.length - 1);
+        canvas.height = 512;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return "";
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        images.forEach((img, i) => {
+            if (img) ctx.drawImage(img, i * (512 + GAP), 0, 512, 512);
+        });
+        return canvas.toDataURL("image/png");
+    };
+
+    const submitHandwriting = async () => {
+        if (!quizToken || submitting || result || !prompt) return;
+        if (prompt.type !== "chinese_word") return;
+
+        const pads: UserStroke[][] = [];
+        for (let i = 0; i < prompt.maskedLength; i++) {
+            const s = padStrokes[i];
+            if (!s || s.length === 0) {
+                setError("请在每个田字格里写好字再提交");
+                return;
+            }
+            pads.push(s);
+        }
+
+        setSubmitting(true);
+        try {
+            const image = await stitchPadImages();
+            const data = await apiClient.post<AnswerResult>(
+                "/api/dictation/handwriting/answer",
+                { quizToken, strokes: pads, image },
+                { params: debugParams() }
+            );
+            setResult(data);
+            setStats((s) =>
+                data.correct ? { ...s, correct: s.correct + 1 } : { ...s, wrong: s.wrong + 1 }
+            );
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "判分失败");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
     const submit = async () => {
         if (!quizToken || submitting || result) return;
+        if (handwrite && prompt?.type === "chinese_word") {
+            await submitHandwriting();
+            return;
+        }
         setSubmitting(true);
         try {
             const data = await apiClient.post<AnswerResult>("/api/dictation/answer", {
@@ -417,35 +496,89 @@ function QuizContent() {
                         </div>
                     )}
 
-                    <div className="mt-4 flex gap-2">
-                        <Input
-                            ref={inputRef}
-                            value={answer}
-                            onChange={(e) => setAnswer(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    if (result) next();
-                                    else submit();
-                                }
-                            }}
-                            disabled={!!result}
-                            placeholder={prompt.type === "chinese_word" ? "写出这个字" : "写出你听到的内容"}
-                            className="text-center text-lg"
-                            autoComplete="off"
-                            autoCorrect="off"
-                            spellCheck={false}
-                        />
-                        {!result ? (
-                            <Button onClick={submit} disabled={submitting || !answer.trim()}>
-                                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "提交"}
-                            </Button>
-                        ) : (
-                            <Button onClick={next}>
-                                下一题 <ArrowRight className="ml-2 h-4 w-4" />
-                            </Button>
-                        )}
-                    </div>
+                    {handwrite && prompt.type === "chinese_word" ? (
+                        <div className="mt-4 space-y-3">
+                            <div className="flex flex-wrap items-start justify-center gap-4">
+                                {Array.from({ length: prompt.maskedLength }).map((_, i) => (
+                                    <div key={i} className="flex w-[150px] flex-col items-center gap-1">
+                                        <HandwritingPad
+                                            ref={(h) => {
+                                                padRefs.current[i] = h;
+                                            }}
+                                            disabled={!!result}
+                                            onStrokesChange={(s) =>
+                                                setPadStrokes((prev) => {
+                                                    const next = [...prev];
+                                                    next[i] = s;
+                                                    return next;
+                                                })
+                                            }
+                                        />
+                                        <span className="text-xs text-muted-foreground">
+                                            {result
+                                                ? `答案：${Array.from(result.expected)[i] ?? ""}`
+                                                : `第 ${i + 1} 个字`}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="flex justify-center">
+                                {!result ? (
+                                    <Button
+                                        onClick={submit}
+                                        disabled={
+                                            submitting ||
+                                            prompt.maskedLength === 0 ||
+                                            Array.from({ length: prompt.maskedLength }).some(
+                                                (_, i) => !padStrokes[i] || padStrokes[i].length === 0
+                                            )
+                                        }
+                                    >
+                                        {submitting ? (
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <PenLine className="mr-2 h-4 w-4" />
+                                        )}
+                                        提交判分
+                                    </Button>
+                                ) : (
+                                    <Button onClick={next}>
+                                        下一题 <ArrowRight className="ml-2 h-4 w-4" />
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="mt-4 flex gap-2">
+                            <Input
+                                ref={inputRef}
+                                value={answer}
+                                onChange={(e) => setAnswer(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        if (result) next();
+                                        else submit();
+                                    }
+                                }}
+                                disabled={!!result}
+                                placeholder={prompt.type === "chinese_word" ? "写出这个字" : "写出你听到的内容"}
+                                className="text-center text-lg"
+                                autoComplete="off"
+                                autoCorrect="off"
+                                spellCheck={false}
+                            />
+                            {!result ? (
+                                <Button onClick={submit} disabled={submitting || !answer.trim()}>
+                                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "提交"}
+                                </Button>
+                            ) : (
+                                <Button onClick={next}>
+                                    下一题 <ArrowRight className="ml-2 h-4 w-4" />
+                                </Button>
+                            )}
+                        </div>
+                    )}
 
                     {result && (
                         <div
@@ -468,6 +601,22 @@ function QuizContent() {
                                     </>
                                 )}
                             </div>
+
+                            {handwrite && result.strokeCorrect === true && (
+                                <p className="mb-1 text-sm text-emerald-700 dark:text-emerald-400">
+                                    笔顺正确！
+                                </p>
+                            )}
+                            {handwrite && result.strokeCorrect === false && (
+                                <p className="mb-1 text-sm text-amber-600 dark:text-amber-500">
+                                    笔顺不对 —— 记住先横后竖、先撇后捺，从上到下、从左到右。
+                                </p>
+                            )}
+                            {handwrite && result.judgedBy === "fallback" && (
+                                <p className="mb-1 text-xs text-muted-foreground">
+                                    AI 复核不可用，已按笔迹形状判定。
+                                </p>
+                            )}
 
                             {!result.correct && (
                                 <p className="mb-1 text-sm">

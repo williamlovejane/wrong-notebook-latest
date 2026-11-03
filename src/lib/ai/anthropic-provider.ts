@@ -365,6 +365,23 @@ export class AnthropicProvider implements AIService {
         }
     }
 
+    async analyzeImageWithPrompt(imageBase64: string, mimeType: string, prompt: string): Promise<string> {
+        logger.info({ provider: 'Anthropic', imageSize: imageBase64.length }, 'Image With Prompt Request');
+
+        try {
+            const text = await this.complete('', [
+                imageBlock(imageBase64, mimeType),
+                { type: 'text', text: prompt },
+            ], 1024);
+            if (!text) throw new Error("Empty response from AI");
+            return text;
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during image with prompt');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
     async generateFigureSvg(imageBase64: string, mimeType: string, questionText?: string | null): Promise<FigureResult> {
         const prompt = generateFigureRequest(questionText);
         logger.info({ provider: 'Anthropic', model: this.model, imageSize: imageBase64.length }, 'Figure SVG Request');

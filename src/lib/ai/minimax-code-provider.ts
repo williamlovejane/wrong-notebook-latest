@@ -28,6 +28,10 @@ export class MiniMaxCodeProvider implements AIService {
         return this.run((p) => p.analyzeImage(...args));
     }
 
+    analyzeImageWithPrompt(...args: Parameters<AIService['analyzeImageWithPrompt']>) {
+        return this.run((p) => p.analyzeImageWithPrompt(...args));
+    }
+
     recognizeGrade(...args: Parameters<AIService['recognizeGrade']>) {
         return this.run((p) => p.recognizeGrade(...args));
     }

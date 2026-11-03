@@ -630,6 +630,34 @@ export class OpenAIProvider implements AIService {
         }
     }
 
+    async analyzeImageWithPrompt(imageBase64: string, mimeType: string, prompt: string): Promise<string> {
+        logger.info({ provider: 'OpenAI', imageSize: imageBase64.length }, 'Image With Prompt Request');
+
+        try {
+            const response = await this.openai.chat.completions.create({
+                model: this.model,
+                messages: [
+                    {
+                        role: "user",
+                        content: [
+                            { type: "image_url", image_url: { url: `data:${mimeType};base64,${imageBase64}` } },
+                            { type: "text", text: prompt },
+                        ],
+                    },
+                ],
+                max_tokens: 1024,
+            });
+
+            const text = response.choices[0]?.message?.content || '';
+            if (!text) throw new Error("Empty response from AI");
+            return text;
+        } catch (error) {
+            logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during image with prompt');
+            this.handleError(error);
+            throw error;
+        }
+    }
+
     async generateFigureSvg(imageBase64: string, mimeType: string, questionText?: string | null): Promise<FigureResult> {
         const prompt = generateFigureRequest(questionText);
         logger.info({ provider: 'OpenAI', model: this.model, imageSize: imageBase64.length }, 'Figure SVG Request');

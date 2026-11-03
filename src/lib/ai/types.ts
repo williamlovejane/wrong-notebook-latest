@@ -98,6 +98,8 @@ export interface AIService {
     /** 只识别年级学期，用于直接录入或外部识别结果缺少年级的情况。 */
     recognizeGrade(questionText: string): Promise<string | null>;
     analyzeImage(imageBase64: string, mimeType?: string, language?: 'zh' | 'en', grade?: GradeLevel | null, subject?: string | null, gradeSemester?: string | null, candidateTags?: CandidateTags): Promise<ParsedQuestionFromSchema>;
+    /** 通用视觉调用：图片 + 调用方自备提示词，返回模型原始文本（供听写判分等专用场景透传 prompt） */
+    analyzeImageWithPrompt(imageBase64: string, mimeType: string, prompt: string): Promise<string>;
     /** originalFigureSvg：原题的 SVG 配图，新题需要配图时据此重新绘制 */
     generateSimilarQuestion(originalQuestion: string, knowledgePoints: string[], language?: 'zh' | 'en', difficulty?: DifficultyLevel, gradeSemester?: string | null, originalFigureSvg?: string | null): Promise<ParsedQuestionFromSchema>;
     /** 根据题目图片单独重绘配图 */

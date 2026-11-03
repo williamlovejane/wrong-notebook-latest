@@ -88,6 +88,8 @@ RUN apk add --no-cache su-exec openssl \
 COPY --from=deps --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=deps --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
 COPY --from=deps --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
+# 汉字笔顺标准数据（手写判分用 fs 按需读取，standalone 不会自动追踪，需显式复制）
+COPY --from=deps --chown=nextjs:nodejs /app/node_modules/hanzi-writer-data ./node_modules/hanzi-writer-data
 
 # Copy Prisma schema, migrations, pre-seeded database and runtime scripts from db-builder
 COPY --from=db-builder --chown=nextjs:nodejs /app/prisma ./prisma
