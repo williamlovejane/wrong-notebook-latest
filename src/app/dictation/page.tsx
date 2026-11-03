@@ -11,11 +11,17 @@ import { BackButton } from "@/components/ui/back-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiClient } from "@/lib/api-client";
 import { currentSemesterFromProfile } from "@/lib/yuwen/semester";
-import { Loader2, Plus, Trash2, Play, BookOpen, Volume2, Languages } from "lucide-react";
+import {
+    DEBUG_NOW_PARAM,
+    DEBUG_NOW_STORAGE_KEY,
+    parseDebugNow,
+} from "@/lib/dictation/debug-time";
+import { Loader2, Plus, Trash2, Play, BookOpen, Volume2, Languages, FlaskConical } from "lucide-react";
 
 type Kind = "chinese_char" | "english_word" | "english_sentence";
 
 interface UserProfile {
+    role?: string;
     educationStage?: string | null;
     enrollmentYear?: number | null;
 }
@@ -117,19 +123,49 @@ export default function DictationPage() {
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    // 调试模式（仅 admin）：模拟任意一天触发复习计划；值存 sessionStorage 贯通答题页
+    const [isAdmin, setIsAdmin] = useState(false);
+    const [debugDate, setDebugDate] = useState<string | null>(null);
 
-    const loadAll = useCallback(async () => {
-        setLoading(true);
+    useEffect(() => {
         try {
-            const [todayRes, entryRes, profile] = await Promise.all([
-                apiClient.get<TodayResponse>("/api/dictation/today"),
-                apiClient.get<{ entries: Entry[] }>("/api/dictation/entries"),
-                apiClient
-                    .get<UserProfile>("/api/user")
-                    .catch(() => ({ educationStage: undefined, enrollmentYear: undefined })),
-            ]);
-            setToday(todayRes);
-            setEntries(entryRes.entries);
+            setDebugDate(sessionStorage.getItem(DEBUG_NOW_STORAGE_KEY));
+        } catch {
+            // 忽略隐私模式等存储异常
+        }
+    }, []);
+
+    /** 调试参数：debugDate 生效时附加 debugNow；非法值视为未设置 */
+    const debugParams = useCallback(
+        (): Record<string, string> | undefined => {
+            if (!debugDate) return undefined;
+            return parseDebugNow(debugDate)
+                ? { [DEBUG_NOW_PARAM]: debugDate }
+                : undefined;
+        },
+        [debugDate]
+    );
+
+    const loadAll = useCallback(
+        async (dp?: Record<string, string>) => {
+            setLoading(true);
+            try {
+                const [todayRes, entryRes, profile] = await Promise.all([
+                    apiClient.get<TodayResponse>("/api/dictation/today", {
+                        params: dp,
+                    }),
+                    apiClient.get<{ entries: Entry[] }>("/api/dictation/entries", {
+                        params: dp,
+                    }),
+                    apiClient
+                        .get<UserProfile>("/api/user")
+                        .catch(() =>
+                            ({ role: undefined, educationStage: undefined, enrollmentYear: undefined } as UserProfile)
+                        ),
+                ]);
+                setToday(todayRes);
+                setEntries(entryRes.entries);
+                setIsAdmin(profile.role === "admin");
             const cur = currentSemesterFromProfile(
                 profile.educationStage ?? null,
                 profile.enrollmentYear ?? null
@@ -151,6 +187,20 @@ export default function DictationPage() {
         loadAll();
     }, [loadAll]);
 
+    // 恢复上次会话的调试时间后重新加载（模拟时间影响"今日待复习"）
+    useEffect(() => {
+        try {
+            const saved = sessionStorage.getItem(DEBUG_NOW_STORAGE_KEY);
+            if (saved && parseDebugNow(saved)) {
+                setDebugDate(saved);
+                loadAll({ [DEBUG_NOW_PARAM]: saved });
+            }
+        } catch {
+            // 忽略隐私模式等存储异常
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const submit = async () => {
         const items = parseItems(activeKind, rawInput);
         if (items.length === 0) {
@@ -169,7 +219,7 @@ export default function DictationPage() {
             }>("/api/dictation/entries", {
                 kind: activeKind,
                 items,
-            });
+            }, { params: debugParams() });
 
             let msg = `成功录入 ${res.createdCount} 条`;
             if (res.skippedCount > 0) {
@@ -201,6 +251,27 @@ export default function DictationPage() {
     const kindEntries = entries.filter((e) => e.kind === activeKind);
     const activeTab = KIND_TABS.find((k) => k.key === activeKind)!;
 
+    /** 调试模式：设置/清除模拟日期并重载（仅 admin 可见入口） */
+    const applyDebugDate = (value: string | null) => {
+        setDebugDate(value);
+        try {
+            if (value) sessionStorage.setItem(DEBUG_NOW_STORAGE_KEY, value);
+            else sessionStorage.removeItem(DEBUG_NOW_STORAGE_KEY);
+        } catch {
+            // 忽略隐私模式等存储异常
+        }
+        loadAll(value && parseDebugNow(value) ? { [DEBUG_NOW_PARAM]: value } : undefined);
+    };
+
+    const shiftDebugDate = (days: number) => {
+        const base = parseDebugNow(debugDate) ?? new Date();
+        base.setDate(base.getDate() + days);
+        const y = base.getFullYear();
+        const m = String(base.getMonth() + 1).padStart(2, "0");
+        const d = String(base.getDate()).padStart(2, "0");
+        applyDebugDate(`${y}-${m}-${d}`);
+    };
+
     return (
         <div className="container mx-auto max-w-4xl px-4 py-8">
             <div className="mb-6 flex items-center gap-3">
@@ -229,9 +300,57 @@ export default function DictationPage() {
                 </div>
             )}
 
+            {isAdmin && (
+                <Card className="mb-6 border-dashed border-amber-500/40">
+                    <CardContent className="flex flex-wrap items-center gap-2 py-3">
+                        <FlaskConical className="h-4 w-4 shrink-0 text-amber-600" />
+                        <span className="text-sm font-medium">调试模式</span>
+                        <input
+                            type="date"
+                            className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                            value={debugDate ?? new Date().toISOString().slice(0, 10)}
+                            onChange={(e) => applyDebugDate(e.target.value || null)}
+                        />
+                        <Button variant="outline" size="sm" onClick={() => shiftDebugDate(1)}>
+                            +1 天
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => shiftDebugDate(3)}>
+                            +3 天
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => shiftDebugDate(7)}>
+                            +7 天
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => shiftDebugDate(30)}>
+                            +30 天
+                        </Button>
+                        {debugDate && parseDebugNow(debugDate) ? (
+                            <>
+                                <Badge className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+                                    模拟时间 {debugDate}
+                                </Badge>
+                                <Button variant="ghost" size="sm" onClick={() => applyDebugDate(null)}>
+                                    回到今天
+                                </Button>
+                            </>
+                        ) : (
+                            <span className="text-xs text-muted-foreground">
+                                选个日期模拟那一天的到期与排程；答题判分也按模拟时间计算
+                            </span>
+                        )}
+                    </CardContent>
+                </Card>
+            )}
+
             <Card className="mb-6">
                 <CardHeader className="pb-3">
-                    <CardTitle className="text-base">今日待复习</CardTitle>
+                    <CardTitle className="text-base">
+                        今日待复习
+                        {debugDate && parseDebugNow(debugDate) && (
+                            <span className="ml-2 text-sm font-normal text-amber-600">
+                                （模拟 {debugDate}）
+                            </span>
+                        )}
+                    </CardTitle>
                 </CardHeader>
                 <CardContent>
                     {loading ? (

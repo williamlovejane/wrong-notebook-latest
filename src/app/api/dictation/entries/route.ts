@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/dictation/auth";
 import { isAllHanzi } from "@/lib/dictation/pool";
 import { isDictationKind, type DictationKind } from "@/lib/dictation/types";
 import { initialDueDate, describeStage } from "@/lib/dictation/schedule";
+import { resolveDebugNow } from "@/lib/dictation/debug-time";
 import { unauthorized, badRequest, internalError } from "@/lib/api-errors";
 import { lookupCharOrigin } from "@/lib/yuwen/db";
 import { createLogger } from "@/lib/logger";
@@ -103,7 +104,7 @@ export async function POST(req: Request) {
 
         const created: string[] = [];
         const skipped: { text: string; reason: string }[] = [];
-        const now = new Date();
+        const now = resolveDebugNow(req, user.role) ?? new Date();
         const due = initialDueDate(now);
 
         for (const item of rawItems) {

@@ -45,6 +45,7 @@ export async function GET() {
             select: {
                 name: true,
                 email: true,
+                role: true,
                 educationStage: true,
                 enrollmentYear: true,
                 gradeRecognitionMode: true,

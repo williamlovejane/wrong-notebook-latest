@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { isDictationKind } from "@/lib/dictation/types";
+import { resolveDebugNow } from "@/lib/dictation/debug-time";
 import { describeStage, isDue, overdueDays, REVIEW_INTERVALS } from "@/lib/dictation/schedule";
 import { unauthorized, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
@@ -44,7 +45,8 @@ export async function GET(req: Request) {
             orderBy: [{ dueAt: "asc" }],
         });
 
-        const now = new Date();
+        // 调试模式：admin 可用 debugNow 模拟任意一天的复习计划
+        const now = resolveDebugNow(req, user.role) ?? new Date();
         const due = cards.filter((c) => isDue(c.dueAt, now));
         const list = includeFuture ? cards : due;
 

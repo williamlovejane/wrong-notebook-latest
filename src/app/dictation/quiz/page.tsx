@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { BackButton } from "@/components/ui/back-button";
 import { apiClient } from "@/lib/api-client";
+import { DEBUG_NOW_PARAM, DEBUG_NOW_STORAGE_KEY } from "@/lib/dictation/debug-time";
 import { Loader2, Volume2, CheckCircle2, XCircle, ArrowRight } from "lucide-react";
 
 type Kind = "chinese_char" | "english_word" | "english_sentence";
@@ -111,6 +112,27 @@ function QuizContent() {
 
     const current = queue[index];
 
+    // 调试模式：列表页设置的模拟时间（sessionStorage），出题/判分与今日列表保持同一时钟
+    const debugParams = useCallback((): Record<string, string> | undefined => {
+        try {
+            const saved = sessionStorage.getItem(DEBUG_NOW_STORAGE_KEY);
+            return saved ? { [DEBUG_NOW_PARAM]: saved } : undefined;
+        } catch {
+            return undefined;
+        }
+    }, []);
+
+    // 记录是否有模拟时间，用于页头提示
+    const [simDate, setSimDate] = useState<string | null>(null);
+    useEffect(() => {
+        try {
+            const saved = sessionStorage.getItem(DEBUG_NOW_STORAGE_KEY);
+            if (saved) setSimDate(saved);
+        } catch {
+            // 忽略
+        }
+    }, []);
+
     useEffect(() => {
         let cancelled = false;
 
@@ -118,7 +140,7 @@ function QuizContent() {
             try {
                 const data = await apiClient.get<{ items: TodayItem[] }>(
                     "/api/dictation/today",
-                    { params: kindFilter ? { kind: kindFilter } : undefined }
+                    { params: { ...(kindFilter ? { kind: kindFilter } : {}), ...debugParams() } }
                 );
                 if (cancelled) return;
                 setQueue(data.items);
@@ -133,8 +155,9 @@ function QuizContent() {
         return () => {
             cancelled = true;
         };
-    }, [kindFilter]);
+    }, [kindFilter, debugParams]);
 
+    // 调试模式：出题与判分沿用同一模拟时钟
     const loadQuestion = useCallback(async (cardId: string) => {
         setPrompt(null);
         setResult(null);
@@ -145,7 +168,8 @@ function QuizContent() {
         try {
             const data = await apiClient.post<{ prompt: Prompt; quizToken: string }>(
                 "/api/dictation/quiz",
-                { cardId }
+                { cardId },
+                { params: debugParams() }
             );
             setPrompt(data.prompt);
             setQuizToken(data.quizToken);
@@ -153,7 +177,7 @@ function QuizContent() {
         } catch (e) {
             setError(e instanceof Error ? e.message : "出题失败");
         }
-    }, []);
+    }, [debugParams]);
 
     useEffect(() => {
         if (current) loadQuestion(current.cardId);
@@ -175,7 +199,7 @@ function QuizContent() {
             const data = await apiClient.post<AnswerResult>("/api/dictation/answer", {
                 quizToken,
                 answer,
-            });
+            }, { params: debugParams() });
             setResult(data);
             setStats((s) =>
                 data.correct ? { ...s, correct: s.correct + 1 } : { ...s, wrong: s.wrong + 1 }
@@ -287,6 +311,11 @@ function QuizContent() {
                     <div className="text-sm text-muted-foreground">
                         第 {index + 1} / {queue.length} 题
                         {current.overdueDays > 0 && ` · 逾期 ${current.overdueDays} 天`}
+                        {simDate && (
+                            <span className="ml-2 font-medium text-amber-600">
+                                （调试：模拟 {simDate}）
+                            </span>
+                        )}
                     </div>
                     <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
                         <div

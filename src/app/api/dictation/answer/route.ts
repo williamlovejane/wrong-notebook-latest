@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { checkAnswer, diffSentence } from "@/lib/dictation/answer";
 import { scheduleAfterReview, describeStage } from "@/lib/dictation/schedule";
+import { resolveDebugNow } from "@/lib/dictation/debug-time";
 import type { DictationKind } from "@/lib/dictation/types";
 import { unauthorized, badRequest, notFound, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
@@ -38,7 +39,9 @@ export async function POST(req: Request) {
         const expected = card.entry.text;
 
         const result = checkAnswer(kind, expected, answer);
-        const next = scheduleAfterReview(card.stage, result.correct);
+        // 调试模式下用模拟时间排程，让"任意一天"的复习闭环可测
+        const now = resolveDebugNow(req, user.role) ?? new Date();
+        const next = scheduleAfterReview(card.stage, result.correct, now);
 
         const [updatedCard, updatedLog] = await prisma.$transaction([
             prisma.reviewCard.update({
@@ -49,7 +52,7 @@ export async function POST(req: Request) {
                     dueAt: next.dueAt,
                     correctCount: result.correct ? { increment: 1 } : undefined,
                     wrongCount: result.correct ? undefined : { increment: 1 },
-                    lastReviewedAt: new Date(),
+                    lastReviewedAt: now,
                 },
             }),
             prisma.reviewLog.update({
