@@ -374,3 +374,25 @@ model ReviewLog {
   @@index([cardId, reviewedAt])
   @@index([batchId])
 }
+
+// 大模型调用日志：每次 HTTP 请求一条，用于用量查询与成本报表
+model AiCallLog {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+
+  provider     String   // 渠道：gemini | openai | azure | anthropic | minimax-code | vendor 名
+  model        String?  // 模型名（请求 body 或响应中的 model 字段）
+  reason       String?  // 调用原因（AIService 方法名，如 analyzeImage）
+  endpoint     String?  // API 路径（如 /v1/chat/completions）
+
+  status       Int?     // HTTP 状态码；网络层异常记 0
+  error        String?  // 失败摘要（截断存储）
+  durationMs   Int?
+
+  inputTokens  Int?
+  outputTokens Int?
+  cachedTokens Int?     // 缓存命中的输入 token 数
+
+  @@index([createdAt])
+  @@index([reason])
+}

@@ -39,8 +39,6 @@ interface SubmitSummary {
 
 type Phase = "loading" | "paper" | "grading" | "done";
 
-const PAPER_ID_KEY = "dictation_paper_id";
-
 /** 压缩试卷照片：长边 ≤1600px、JPEG 质量 0.85，够 AI 辨认又不会太大 */
 async function compressPhoto(file: File): Promise<string> {
     const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -90,7 +88,7 @@ export default function PaperPage() {
     const [error, setError] = useState<string | null>(null);
     const fileRef = useRef<HTMLInputElement>(null);
 
-    /** 出一张新卷 */
+    /** 每次进入页面都用当前最新到期生字出一张新卷 */
     const createPaper = useCallback(async () => {
         setPhase("loading");
         setError(null);
@@ -103,49 +101,16 @@ export default function PaperPage() {
             setPaperId(res.paperId);
             setItems(res.items);
             setSkipped(res.skipped ?? []);
-            try {
-                sessionStorage.setItem(PAPER_ID_KEY, res.paperId);
-            } catch {
-                // 忽略隐私模式
-            }
             setPhase("paper");
         } catch (e) {
             setError(e instanceof Error ? e.message : "出卷失败");
         }
     }, []);
 
-    /** 恢复上次的卷子（pending 的才能继续判） */
-    const restorePaper = useCallback(async (id: string): Promise<boolean> => {
-        try {
-            const res = await apiClient.get<{
-                paperId: string;
-                items: (PaperItem & { status: string })[];
-                pendingCount: number;
-            }>(`/api/dictation/paper/${id}`, { params: debugParams() });
-            if (res.pendingCount === 0) return false;
-            setPaperId(res.paperId);
-            setItems(res.items);
-            setSkipped([]);
-            return true;
-        } catch {
-            return false;
-        }
-    }, []);
-
     useEffect(() => {
-        (async () => {
-            let restored = false;
-            try {
-                const saved = sessionStorage.getItem(PAPER_ID_KEY);
-                if (saved) restored = await restorePaper(saved);
-            } catch {
-                // 忽略隐私模式
-            }
-            if (!restored) await createPaper();
-            else setPhase("paper");
-        })();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面出卷，请求前后更新加载状态
+        void createPaper();
+    }, [createPaper]);
 
     const printPaper = () => window.print();
 
@@ -211,11 +176,6 @@ export default function PaperPage() {
             );
             setSummary(res);
             setPhase("done");
-            try {
-                sessionStorage.removeItem(PAPER_ID_KEY);
-            } catch {
-                // 忽略
-            }
         } catch (e) {
             setError(e instanceof Error ? e.message : "提交失败");
         } finally {
@@ -226,15 +186,7 @@ export default function PaperPage() {
     const undecided = gradingItems.filter((g) => g.correct === null).length;
 
     return (
-        <div className="container mx-auto max-w-4xl px-4 py-8">
-            <style>{`
-                @media print {
-                    body * { visibility: hidden !important; }
-                    .paper-print, .paper-print * { visibility: visible !important; }
-                    .paper-print { position: absolute; left: 0; top: 0; width: 100%; }
-                }
-            `}</style>
-
+        <div className="container mx-auto max-w-4xl px-4 py-8 print:max-w-none print:px-0 print:py-0">
             <div className="mb-6 flex items-center gap-3 print:hidden">
                 <BackButton fallbackUrl="/dictation" />
                 <div className="flex-1">

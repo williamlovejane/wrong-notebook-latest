@@ -37,15 +37,15 @@ function ShownBox({ ch }: { ch: string }) {
 export function PaperSheet({ dateLabel, items }: PaperSheetProps) {
     return (
         <div className="paper-print rounded-lg border bg-white p-6 text-neutral-900 shadow-sm print:border-0 print:p-0 print:shadow-none">
-            <div className="mb-1 text-center text-xl font-bold">今日生字考察</div>
-            <div className="mb-6 flex items-center justify-between text-sm text-neutral-600">
+            <div className="mb-1 break-inside-avoid text-center text-xl font-bold">今日生字考察</div>
+            <div className="mb-6 flex break-inside-avoid items-center justify-between text-sm text-neutral-600">
                 <span>{dateLabel}</span>
                 <span>姓名：＿＿＿＿＿＿　得分：＿＿＿＿</span>
             </div>
 
             <div className="grid grid-cols-1 gap-x-8 gap-y-5 sm:grid-cols-2">
                 {items.map((item, i) => (
-                    <div key={i} className="flex items-end gap-2">
+                    <div key={i} className="flex break-inside-avoid items-end gap-2">
                         <span className="w-7 shrink-0 pb-1 text-sm font-semibold text-neutral-700">
                             {i + 1}.
                         </span>

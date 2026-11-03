@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { Loader2, Users } from "lucide-react";
+import { Loader2, Users, Bot } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -67,6 +68,14 @@ export default function AdminPage() {
             <PageHeader
                 title={t.admin?.dashboard?.title || "Admin Dashboard"}
                 description={t.admin?.dashboard?.subtitle || "View all users and error statistics"}
+                actions={
+                    <Link href="/admin/ai-usage">
+                        <Button variant="outline" size="sm">
+                            <Bot className="mr-2 h-4 w-4" />
+                            大模型调用
+                        </Button>
+                    </Link>
+                }
             />
 
             {/* Overview Cards */}

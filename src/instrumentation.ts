@@ -4,6 +4,10 @@ export async function register() {
         const { setupGlobalProxy } = await import('./lib/global-proxy');
         setupGlobalProxy();
 
+        // 记录每次大模型调用的用量（token/缓存/耗时/原因）
+        const { installAiFetchRecorder } = await import('./lib/ai/fetch-recorder');
+        installAiFetchRecorder();
+
         // 构建阶段不启动定时任务
         if (process.env.NEXT_PHASE !== 'phase-production-build') {
             const { startCheckinScheduler } = await import('./lib/minimax-code/checkin');

@@ -7,6 +7,7 @@
 import { parseConcurrencyLimit } from '../ai-concurrency-limit';
 import { getAppConfig } from '../config';
 import { createLogger } from '../logger';
+import { runInAiCall } from './call-context';
 
 const logger = createLogger('ai:concurrency');
 
@@ -78,13 +79,22 @@ export function getModelConcurrencyState(key: string): { active: number; waiting
 /**
  * 包装 AI 服务：每个方法调用都受同一模型的并发上限约束。
  * 方法内部通过 this 调用的其他方法不再重复排队，避免互相等待。
+ * 同时为每次调用挂上「原因 + 渠道 + 模型」上下文，供 fetch 记录器归因。
  */
 export function limitModelConcurrency<T extends object>(service: T, key: string): T {
+    // key 格式：provider|baseUrl|model
+    const [provider, , model] = key.split('|');
     return new Proxy(service, {
         get(target, prop, receiver) {
             const value = Reflect.get(target, prop, receiver);
             if (typeof value !== 'function' || prop === 'constructor') return value;
-            return (...args: unknown[]) => runWithModelConcurrency(key, () => Promise.resolve(value.apply(target, args)));
+            return (...args: unknown[]) =>
+                runWithModelConcurrency(key, () =>
+                    runInAiCall(
+                        { reason: String(prop), provider, model: model || undefined },
+                        () => Promise.resolve(value.apply(target, args))
+                    )
+                );
         },
     });
 }
