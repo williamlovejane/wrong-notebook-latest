@@ -85,6 +85,18 @@ export function validateWord(
         };
     }
 
+    // 待考生字在词中只能出现一次：出现两次时，遮蔽只会盖住第一处
+    // （如「茸」考「绿茸茸」会显示成「绿○茸」，第二处「茸」直接泄露答案）
+    const occurrenceCount = cleanWord.split(cleanTarget).length - 1;
+    if (occurrenceCount > 1) {
+        return {
+            ok: false,
+            maskedAt,
+            illegalChars: [],
+            reason: `「${cleanTarget}」在词中出现 ${occurrenceCount} 次，遮蔽无法覆盖全部`,
+        };
+    }
+
     // 目标字占用的下标区间，其余字符都要在字库里
     const targetEnd = maskedAt + cleanTarget.length;
     const illegalChars: string[] = [];

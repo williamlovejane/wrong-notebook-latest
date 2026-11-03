@@ -63,6 +63,17 @@ describe("组词校验", () => {
         expect(r.ok).toBe(true);
         expect(r.maskedAt).toBe(0);
     });
+
+    it("待考字出现多次时拒绝（避免遮蔽后泄露答案）", () => {
+        // 「绿茸茸」考「茸」：遮蔽只能盖住第一处，第二处「茸」会显示给学生
+        const r = validateWord("绿茸茸", "茸", poolCharSet("绿"));
+        expect(r.ok).toBe(false);
+        expect(r.reason).toContain("出现 2 次");
+
+        // 叠词同理
+        expect(validateWord("天天", "天", POOL).ok).toBe(false);
+        expect(validateWord("毛茸茸", "茸", poolCharSet("毛绿")).ok).toBe(false);
+    });
 });
 
 describe("遮蔽与拼音", () => {
