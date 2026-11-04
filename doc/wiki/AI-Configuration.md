@@ -105,7 +105,7 @@ MiniMax Code OAuth 用 MiniMax Code 账号登录后调用模型，不需要 API 
 | 输出 SVG 代码 | 静态配图与 SVG 动画讲解 |
 | 足够长的输出 | 包含配图的识别结果及分步骤动画 |
 
-SVG 配图与动画由语言模型输出代码生成，不调用图片生成接口。动画常需要较长输出，输出截断时应用会按模型的最大输出重试一次（已知模型用官方上限，未知模型先试 65536，接口报超限时自动读出模型上限再试）；模型本身也必须支持相应长度。
+SVG 配图与动画由语言模型输出代码生成，不调用图片生成接口。动画常需要较长输出，应用每次调用都直接按模型允许的最大输出请求（已知模型用官方上限，未知模型用 262144（256K），接口报超限时自动读出模型上限再试并记住）；模型本身也必须支持相应长度。按 `max_tokens` 预扣额度的中转网关（如 NewAPI）需要账户余额足以覆盖预扣。
 
 ## 提示词与生成规则
 
@@ -125,4 +125,4 @@ GeoGebra 的文字、不等式和标签参数按共用命令清单校验，重�
 
 API Key 保存在服务端配置中。备份 `config/` 时应妥善保存，反馈问题时只提供经过脱敏的配置、日志和错误信息。
 
-实现入口：[配置读取](https://github.com/margrop/wrong-notebook/blob/main/src/lib/config.ts) · [提供商选择](https://github.com/margrop/wrong-notebook/blob/main/src/lib/ai/index.ts) · [提示词](https://github.com/margrop/wrong-notebook/blob/main/src/lib/ai/prompts.ts)。
+实现入口：[配置读取](https://github.com/margrop/wrong-notebook/tree/main/src/lib/config) · [提供商选择](https://github.com/margrop/wrong-notebook/blob/main/src/lib/ai/index.ts) · [提示词](https://github.com/margrop/wrong-notebook/tree/main/src/lib/ai/prompts)。

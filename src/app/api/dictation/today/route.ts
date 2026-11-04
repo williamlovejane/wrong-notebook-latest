@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { isDictationKind } from "@/lib/dictation/types";
 import { resolveDebugNow } from "@/lib/dictation/debug-time";
-import { describeStage, isDue, overdueDays, REVIEW_INTERVALS } from "@/lib/dictation/schedule";
+import { describeStage, isDue, overdueDays, REVIEW_INTERVALS, type CardStatus } from "@/lib/dictation/schedule";
 import { unauthorized, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
 
@@ -70,7 +70,7 @@ export async function GET(req: Request) {
                 status: c.status,
                 dueAt: c.dueAt,
                 overdueDays: overdueDays(c.dueAt, now),
-                stageLabel: describeStage(c.stage, c.status as any).label,
+                stageLabel: describeStage(c.stage, c.status as CardStatus).label,
                 intervalDays: REVIEW_INTERVALS[Math.min(c.stage, REVIEW_INTERVALS.length - 1)],
                 // 只有显式 reveal 才返回内容
                 text: reveal ? c.entry.text : null,

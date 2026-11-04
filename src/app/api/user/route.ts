@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { withUser } from "@/lib/api-handler";
+import type { AuthenticatedContext } from "@/lib/api-handler";
 import { z } from "zod";
 import { hash } from "bcryptjs";
 import type { Prisma } from "@prisma/client";
@@ -11,7 +13,7 @@ import { isDefaultAdminPassword } from "@/lib/default-admin";
 import { syncMasteryLevels } from "@/lib/mastery";
 import { MAX_MASTERY_THRESHOLD, MIN_MASTERY_THRESHOLD } from "@/lib/mastery-status";
 import { THEME_PREFERENCES } from "@/lib/theme";
-import { GRADE_RECOGNITION_MODES } from "@/lib/question-grade";
+import { GRADE_RECOGNITION_MODES } from "@/lib/question/question-grade";
 import { GRADE_SEMESTERS } from "@/lib/grade-options";
 
 const logger = createLogger('api:user');
@@ -32,6 +34,10 @@ const userUpdateSchema = z.object({
     masteryThreshold: z.number().int().min(MIN_MASTERY_THRESHOLD).max(MAX_MASTERY_THRESHOLD).optional(),
 });
 
+/**
+ * GET /api/user
+ * 获取当前用户资料；用户不存在时返回 404（而非包装器的 401），保持原有语义
+ */
 export async function GET() {
     const session = await getServerSession(authOptions);
 
@@ -73,13 +79,7 @@ export async function GET() {
     }
 }
 
-export async function PATCH(req: Request) {
-    const session = await getServerSession(authOptions);
-
-    if (!session?.user?.email) {
-        return unauthorized();
-    }
-
+async function handlePatch(req: Request, { session }: AuthenticatedContext) {
     try {
         const body = await req.json();
         const { name, email, password, educationStage, enrollmentYear, gradeRecognitionMode, fixedGradeSemester, confirmBeforeImport, enableGeogebra, enableSvgAnimation, themePreference, questionDuplicateThreshold, masteryThreshold } = userUpdateSchema.parse(body);
@@ -134,7 +134,7 @@ export async function PATCH(req: Request) {
             updateData.password = await hash(password, 10);
         }
 
-        const sessionEmail = session.user.email;
+        const sessionEmail = session.user.email!;
         const updatedUser = await prisma.$transaction(async (tx) => {
             const updated = await tx.user.update({
                 where: { email: sessionEmail },
@@ -172,3 +172,5 @@ export async function PATCH(req: Request) {
         return internalError("Failed to update user profile");
     }
 }
+
+export const PATCH = withUser(handlePatch);

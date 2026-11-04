@@ -193,9 +193,10 @@ export async function generateWordCandidates(
 
     for (const item of parsed) {
         if (!item || typeof item !== "object") continue;
-        const word = typeof (item as any).word === "string" ? (item as any).word.trim() : "";
+        const record = item as Record<string, unknown>;
+        const word = typeof record.word === "string" ? record.word.trim() : "";
         const pinyin =
-            typeof (item as any).pinyin === "string" ? (item as any).pinyin.trim() : "";
+            typeof record.pinyin === "string" ? record.pinyin.trim() : "";
 
         if (!word || seen.has(word)) continue;
 

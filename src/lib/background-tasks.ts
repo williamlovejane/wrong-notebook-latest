@@ -6,6 +6,9 @@
  * 服务重启后仍能看到最近结束的事务；重启时还在进行的事务（AI 调用已随进程中断）标记为失败，提示用户重新操作。
  * 已结束的事务保留一段时间后自动清理。
  */
+
+import "server-only";
+
 import fs from "node:fs";
 import path from "node:path";
 import { createLogger } from "@/lib/logger";
@@ -14,6 +17,8 @@ const logger = createLogger('background-tasks');
 
 export type BackgroundTaskKind =
     | 'analyze'          // 识别题目图片
+    | 'split'            // 多题分题
+    | 'fix_text'         // 修正分题预览中的题目文字
     | 'batch_upload'     // Openclaw 批量上传识别
     | 'data_import'      // 导入备份数据
     | 'svg_animation'    // 生成 SVG 动画讲解

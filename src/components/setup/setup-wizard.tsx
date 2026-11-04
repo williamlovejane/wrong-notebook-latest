@@ -42,6 +42,7 @@ export function SetupWizard({ mustChangePassword, setupCompleted }: SetupWizardP
             toast.success(t.setup.finished);
             // 向导收尾用硬导航：router.replace 是软跳转，在 iOS Chrome 上
             // 偶发不生效，表现为「完成」按钮一直转圈（接口已成功）
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- 硬导航刷新全部客户端状态，规避 iOS Chrome 软跳转偶发不生效
             window.location.assign("/");
         } catch (error) {
             frontendLogger.error('[Setup]', 'Failed to complete setup', { error });

@@ -140,6 +140,7 @@ function QuizContent() {
     useEffect(() => {
         try {
             const saved = sessionStorage.getItem(DEBUG_NOW_STORAGE_KEY);
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- 本地存储只能在客户端挂载后读取，避免与服务端渲染结果不一致
             if (saved) setSimDate(saved);
         } catch {
             // 忽略
@@ -195,6 +196,7 @@ function QuizContent() {
     }, [debugParams]);
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面或当前卡变化时出题，请求前后更新题面状态
         if (current) loadQuestion(current.cardId);
     }, [current, loadQuestion]);
 

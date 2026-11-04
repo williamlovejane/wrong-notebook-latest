@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { BackButton } from "@/components/ui/back-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -129,6 +128,7 @@ export default function DictationPage() {
 
     useEffect(() => {
         try {
+            // eslint-disable-next-line react-hooks/set-state-in-effect -- 本地存储只能在客户端挂载后读取，避免与服务端渲染结果不一致
             setDebugDate(sessionStorage.getItem(DEBUG_NOW_STORAGE_KEY));
         } catch {
             // 忽略隐私模式等存储异常
@@ -184,6 +184,7 @@ export default function DictationPage() {
     }, []);
 
     useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面加载今日复习与词条列表
         loadAll();
     }, [loadAll]);
 
@@ -192,6 +193,7 @@ export default function DictationPage() {
         try {
             const saved = sessionStorage.getItem(DEBUG_NOW_STORAGE_KEY);
             if (saved && parseDebugNow(saved)) {
+                // eslint-disable-next-line react-hooks/set-state-in-effect -- 本地存储只能在客户端挂载后读取，避免与服务端渲染结果不一致
                 setDebugDate(saved);
                 loadAll({ [DEBUG_NOW_PARAM]: saved });
             }
@@ -249,7 +251,6 @@ export default function DictationPage() {
     };
 
     const kindEntries = entries.filter((e) => e.kind === activeKind);
-    const activeTab = KIND_TABS.find((k) => k.key === activeKind)!;
 
     /** 调试模式：设置/清除模拟日期并重载（仅 admin 可见入口） */
     const applyDebugDate = (value: string | null) => {

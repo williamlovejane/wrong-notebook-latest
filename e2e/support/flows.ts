@@ -12,13 +12,15 @@ export async function importImage(page: Page, scenario: Scenario, confirm: boole
     await scenario.control({ hold: true });
     await scenario.login(page);
     await page.goto(confirm ? '/' : `/?notebook=${scenario.book.id}`);
-    await page.locator('input[type="file"]').first().setInputFiles(resolve('e2e/fixtures/math_test.png'));
+    await page.locator('input[type="file"]').first().setInputFiles(resolve('src/__tests__/fixtures/images/math_test.png'));
     await expect(page.getByRole('heading', { name: /裁剪|Crop/ })).toBeVisible();
     await page.getByRole('button', { name: /确认|Confirm/ }).click();
     await expect.poll(async () => (await scenario.model()).calls.filter((call) => call.operation === 'analysis').length).toBe(1);
     await expect(page.getByRole('progressbar')).toBeVisible();
     await scenario.control({ hold: false });
     if (confirm) {
+        // 识别完成后状态卡提示待校对，由用户主动进入校对页
+        await page.getByTestId('pending-import-task').getByRole('button', { name: '继续校对' }).click();
         await expect(page.getByRole('heading', { level: 2 })).toContainText(/校对|Review|Correct/);
         const question = page.locator('textarea').first();
         await expect(question).toHaveValue(`求解方程 x + 2 = 5。${scenario.marker}`);

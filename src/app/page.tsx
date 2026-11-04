@@ -9,6 +9,8 @@ import { DirectTextEditor } from "@/components/direct-text-editor";
 import { HomeHero } from "@/components/home-hero";
 import { ImageCropper } from "@/components/image-cropper";
 import { ImportResultBanner } from "@/components/import-result-banner";
+import { PendingImportTask } from "@/components/import-tasks/pending-import-task";
+import { QuestionPartsBar } from "@/components/question-parts-bar";
 import { QuestionSaveError } from "@/components/question-save-error";
 import { TextInputZone } from "@/components/text-input-zone";
 import { UploadZone } from "@/components/upload-zone";
@@ -19,7 +21,7 @@ import { useLanguage } from "@/contexts/LanguageContext";
 import { apiClient } from "@/lib/api-client";
 import { frontendLogger } from "@/lib/frontend-logger";
 import { usePageTitle } from "@/lib/page-title";
-import { useQuestionImport } from "@/lib/use-question-import";
+import { MAX_QUESTION_PARTS, useQuestionImport } from "@/lib/hooks/use-question-import";
 import type { Notebook, PaginatedResponse } from "@/types/api";
 
 /** 直接录入（不经 AI）提交的内容 */
@@ -42,12 +44,11 @@ function HomeContent() {
     const searchParams = useSearchParams();
     const initialNotebookId = searchParams.get("notebook");
     const [notebooks, setNotebooks] = useState<Notebook[]>([]);
-    const [autoSelectedNotebookId, setAutoSelectedNotebookId] = useState<string | null>(null);
     const [dueCount, setDueCount] = useState<number | null>(null);
     // Input mode: "image" for photo upload, "text" for AI solve, "direct" for manual entry
     const [inputMode, setInputMode] = useState<"image" | "text" | "direct">("image");
 
-    const targetNotebookId = initialNotebookId || autoSelectedNotebookId;
+    const targetNotebookId = initialNotebookId;
     const targetNotebook = targetNotebookId ? notebooks.find(n => n.id === targetNotebookId) : undefined;
 
     const flow = useQuestionImport({
@@ -55,11 +56,6 @@ function HomeContent() {
         analyzeSubjectId: targetNotebookId,
         importSubjectId: initialNotebookId,
         textNotebook: targetNotebook && { id: targetNotebook.id, name: targetNotebook.name },
-        // 按识别出的学科自动选择名称相近的错题本
-        onParsed: (data) => {
-            const matched = data.subject && notebooks.find(n => n.name.includes(data.subject!) || data.subject!.includes(n.name));
-            if (matched) setAutoSelectedNotebookId(matched.id);
-        },
     });
 
     useEffect(() => {
@@ -93,7 +89,7 @@ function HomeContent() {
 
     return (
         <main className="min-h-screen">
-            <ProgressFeedback status={flow.analysisStep} />
+            <ProgressFeedback status={flow.analysisStep} completed={flow.completedStages} />
 
             <div className={`mx-auto space-y-6 px-4 py-6 md:px-8 md:py-8 ${flow.step === "review" ? "max-w-6xl" : "max-w-4xl"}`}>
                 <QuestionSaveError message={flow.saveError} onDismiss={flow.dismissSaveError} />
@@ -109,24 +105,39 @@ function HomeContent() {
                         <div className="space-y-4">
                             <SegmentedControl options={inputModes} value={inputMode} onChange={setInputMode} />
 
+                            {flow.pendingTask && (
+                                <PendingImportTask task={flow.pendingTask} onRefresh={flow.refreshPendingTask} onDismiss={flow.dismissPendingTask} />
+                            )}
+
                             {flow.lastImported && (
                                 <ImportResultBanner imported={flow.lastImported} onDismiss={flow.dismissImported} />
                             )}
 
-                            {flow.batchBlobs ? (
+                            {flow.batchImages ? (
                                 <BatchImportPanel
-                                    blobs={flow.batchBlobs}
+                                    images={flow.batchImages}
                                     subjectId={initialNotebookId}
-                                    timeout={flow.aiTimeout}
                                     onClose={flow.closeBatch}
                                 />
                             ) : inputMode === "image" ? (
+                                <>
+                                {flow.parts.length > 0 && (
+                                    <QuestionPartsBar
+                                        parts={flow.parts.map((part) => part.dataUrl)}
+                                        busy={flow.isBusy}
+                                        onFinish={() => void flow.finishParts()}
+                                        onDiscard={flow.discardParts}
+                                    />
+                                )}
                                 <UploadZone onImageSelect={flow.selectImage} isAnalyzing={flow.isBusy} />
+                            </>
                             ) : inputMode === "text" ? (
                                 <TextInputZone
                                     onSubmit={flow.submitText}
                                     isAnalyzing={flow.isBusy}
                                     defaultNotebookName={targetNotebook?.name}
+                                    onCreateBatch={flow.createTextBatch}
+                                    creatingBatch={flow.creatingBatch}
                                 />
                             ) : (
                                 <DirectTextEditor
@@ -145,8 +156,11 @@ function HomeContent() {
                         imageSrc={flow.croppingImage}
                         open={flow.isCropperOpen}
                         onClose={flow.closeCropper}
-                        onCropComplete={flow.cropComplete}
-                        onMultiCropComplete={flow.startBatch}
+                        onRegionsSelected={flow.cropRegions}
+                        allowMulti={flow.parts.length === 0}
+                        onAutoSplit={flow.parts.length === 0 ? flow.autoSplitImage : undefined}
+                        onAddPart={flow.parts.length < MAX_QUESTION_PARTS - 1 ? flow.addPart : undefined}
+                        partCount={flow.parts.length}
                     />
                 )}
 

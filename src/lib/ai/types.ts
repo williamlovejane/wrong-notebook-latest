@@ -3,7 +3,7 @@ export type { ParsedQuestionFromSchema as ParsedQuestion } from './schema';
 import type { ParsedQuestionFromSchema } from './schema';
 
 // Import and re-export MistakeStatus from the single source of truth
-import type { MistakeStatus } from '../mistake-status';
+import type { MistakeStatus } from '@/lib/question/mistake-status';
 import type { NarrationSegment } from '../svg-animation';
 export type { MistakeStatus };
 
@@ -26,8 +26,12 @@ export interface ReanswerQuestionResult {
 
 export type { FigureResult } from './schema';
 export type { LatexFixInput, LatexFixResult } from './latex-fix';
+export type { TextFixInput, TextFixResult } from './text-fix';
 import type { LatexFixInput, LatexFixResult } from './latex-fix';
 import type { FigureResult } from './schema';
+export type { QuestionSplitInput, QuestionSplitResult, SplitQuestion } from './question-split';
+import type { QuestionSplitInput, QuestionSplitResult } from './question-split';
+import type { TextFixInput, TextFixResult } from './text-fix';
 
 export interface GeogebraAnalysisResult {
     suitable: boolean;
@@ -117,6 +121,10 @@ export interface AIService {
     gradeAnswer(input: AnswerGradingInput): Promise<AnswerGradingResult>;
     /** 从标签库中选知识点，并评定难度星级 */
     suggestKnowledgeTags(input: TagSuggestionInput): Promise<TagSuggestionResult>;
+    /** 把多题文字（按行号）或一张多题图片分成独立的题目；图片分题必须把图片随请求发给模型 */
+    splitQuestions(input: QuestionSplitInput): Promise<QuestionSplitResult>;
+    /** 修正题目文字：删去混入的草稿、修正 OCR 错字，数字和算式保持原样 */
+    fixQuestionText(input: TextFixInput): Promise<TextFixResult>;
 }
 
 export interface AIConfig {

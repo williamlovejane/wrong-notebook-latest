@@ -112,8 +112,9 @@ describe("currentSemesterFromProfile 学期推导", () => {
     function withDate(d: Date, fn: () => void) {
         const Orig = globalThis.Date;
         globalThis.Date = class extends realDate {
-            // args 放宽为 any[]：ConstructorParameters 只给出单参重载，
+            // args 放宽为 unknown[]：ConstructorParameters 只给出单参重载，
             // 其 length 是字面量 1，与 0 比较会被 TS 判为 no overlap
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Date 构造器重载与 rest 参数不兼容，测试替身需要 any[]
             constructor(...args: any[]) {
                 if (args.length === 0) {
                     super(d.getTime());

@@ -7,7 +7,6 @@ import {
 } from "@/lib/yuwen/db";
 import Database from "better-sqlite3";
 import path from "path";
-import fs from "fs";
 
 export const dynamic = "force-dynamic";
 

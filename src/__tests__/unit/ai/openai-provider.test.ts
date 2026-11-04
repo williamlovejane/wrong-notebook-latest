@@ -52,11 +52,9 @@ vi.mock('@/lib/ai/tag-service', () => ({
 
 // Delayed import to ensure mocks are applied
 import { OpenAIProvider } from '@/lib/ai/openai-provider';
-import type { ParsedQuestion } from '@/lib/ai/types';
+import { parseQuestionResponse } from '@/lib/ai/response-parser';
 
 type PrivateOpenAIProvider = {
-    parseResponse(text: string): ParsedQuestion;
-    extractTag(text: string, tagName: string): string | null;
     handleError(error: unknown): never;
 };
 
@@ -75,7 +73,7 @@ describe('OpenAI Provider 响应解析', () => {
         });
     });
 
-    describe('parseResponse', () => {
+    describe('parseQuestionResponse', () => {
         it('举一反三清理题号和分值，拒绝返回选择题', async () => {
             const response = (question: string) => ({ choices: [{ finish_reason: 'stop', message: { content: `<question_text>${question}</question_text><answer_text>4</answer_text><analysis>计算</analysis><subject>数学</subject>` } }] });
             mockCompletionCreate.mockResolvedValue(response('1. （5分）求 2+2 的值。'));
@@ -95,11 +93,11 @@ describe('OpenAI Provider 响应解析', () => {
         });
         it('解析配图标签，SVG 经净化', () => {
             const base = '<question_text>Q</question_text><answer_text>A</answer_text><analysis>An</analysis><subject>数学</subject>';
-            const parsed = asPrivateProvider(provider).parseResponse(base + '<has_figure>true</has_figure><figure_svg><svg onload="x()"><rect width="1" height="1"/></svg></figure_svg>');
+            const parsed = parseQuestionResponse(base + '<has_figure>true</has_figure><figure_svg><svg onload="x()"><rect width="1" height="1"/></svg></figure_svg>');
             expect(parsed.hasFigure).toBe(true);
             expect(parsed.figureSvg).toContain('<rect');
             expect(parsed.figureSvg).not.toContain('onload');
-            expect(asPrivateProvider(provider).parseResponse(base)).toMatchObject({ hasFigure: false, figureSvg: null });
+            expect(parseQuestionResponse(base)).toMatchObject({ hasFigure: false, figureSvg: null });
         });
 
         it('举一反三时把原题配图放进提示词，并解析新题配图', async () => {
@@ -125,10 +123,10 @@ describe('OpenAI Provider 响应解析', () => {
 
         it('解析难度星级标签，缺失或非法时为 null', () => {
             const base = '<question_text>Q</question_text><answer_text>A</answer_text><analysis>An</analysis><subject>数学</subject>';
-            expect(asPrivateProvider(provider).parseResponse(base + '<difficulty_stars>4</difficulty_stars>').difficultyStars).toBe(4);
-            expect(asPrivateProvider(provider).parseResponse(base + '<difficulty_stars>★★</difficulty_stars>').difficultyStars).toBe(2);
-            expect(asPrivateProvider(provider).parseResponse(base).difficultyStars).toBeNull();
-            expect(asPrivateProvider(provider).parseResponse(base + '<difficulty_stars>9</difficulty_stars>').difficultyStars).toBeNull();
+            expect(parseQuestionResponse(base + '<difficulty_stars>4</difficulty_stars>').difficultyStars).toBe(4);
+            expect(parseQuestionResponse(base + '<difficulty_stars>★★</difficulty_stars>').difficultyStars).toBe(2);
+            expect(parseQuestionResponse(base).difficultyStars).toBeNull();
+            expect(parseQuestionResponse(base + '<difficulty_stars>9</difficulty_stars>').difficultyStars).toBeNull();
         });
 
         it('应该正确解析包含所有必需标签的响应', () => {
@@ -141,7 +139,7 @@ describe('OpenAI Provider 响应解析', () => {
 <requires_image>true</requires_image>
             `.trim();
 
-            const result = asPrivateProvider(provider).parseResponse(mockResponse);
+            const result = parseQuestionResponse(mockResponse);
 
             expect(result.questionText).toBe('求函数 f(x) = x^2 的最小值');
             expect(result.answerText).toBe('最小值为 0');
@@ -162,7 +160,7 @@ describe('OpenAI Provider 响应解析', () => {
 <mistake_analysis>移项后没有正确处理常数项。</mistake_analysis>
             `.trim();
 
-            const result = asPrivateProvider(provider).parseResponse(mockResponse);
+            const result = parseQuestionResponse(mockResponse);
 
             expect(result.wrongAnswerText).toBe('x = 4');
             expect(result.mistakeStatus).toBe('wrong_attempt');
@@ -176,7 +174,7 @@ describe('OpenAI Provider 响应解析', () => {
 <analysis>测试解析</analysis>
             `.trim();
 
-            const result = asPrivateProvider(provider).parseResponse(mockResponse);
+            const result = parseQuestionResponse(mockResponse);
 
             expect(result.wrongAnswerText).toBe('');
             expect(result.mistakeAnalysis).toBe('');
@@ -192,7 +190,7 @@ describe('OpenAI Provider 响应解析', () => {
 <mistake_status>unknown</mistake_status>
             `.trim();
 
-            const result = asPrivateProvider(provider).parseResponse(mockResponse);
+            const result = parseQuestionResponse(mockResponse);
 
             expect(result.wrongAnswerText).toBe('错误解答');
             expect(result.mistakeStatus).toBe('wrong_attempt');
@@ -204,7 +202,7 @@ describe('OpenAI Provider 响应解析', () => {
 <answer_text>测试答案</answer_text>
             `.trim();
 
-            expect(() => asPrivateProvider(provider).parseResponse(mockResponse)).toThrow('Missing critical XML tags');
+            expect(() => parseQuestionResponse(mockResponse)).toThrow('Missing critical XML tags');
         });
     });
 });
@@ -361,20 +359,20 @@ describe('OpenAI Provider 知识点重新标注', () => {
     });
 });
 
-describe('OpenAI Provider 推理模型截断重试', () => {
-    it('重新解题时思考耗尽额度后用更大上限重试并成功', async () => {
-        const provider = new OpenAIProvider({ apiKey: 'test-key', model: 'minimax-latest' });
-        mockCompletionCreate
-            .mockResolvedValueOnce({ choices: [{ finish_reason: 'length', message: { content: '' } }] })
-            .mockResolvedValueOnce({ choices: [{ finish_reason: 'stop', message: { content: '<answer_text>x = 2</answer_text><analysis>移项</analysis><knowledge_points>方程</knowledge_points>' } }] });
+describe('OpenAI Provider 输出上限', () => {
+    it('推理模型首次就按模型的最大输出请求，只调用一次', async () => {
+        mockCompletionCreate.mockReset();
+        const answer = { choices: [{ finish_reason: 'stop', message: { content: '<answer_text>x = 2</answer_text><analysis>移项</analysis><knowledge_points>方程</knowledge_points>' } }] };
+        mockCompletionCreate.mockResolvedValue(answer);
 
-        const result = await provider.reanswerQuestion('求解 2x + 3 = 7', 'zh');
-
-        expect(result.answerText).toBe('x = 2');
-        expect(mockCompletionCreate.mock.calls.map((args) => args[0].max_tokens)).toEqual([8192, 65536]);
+        expect((await new OpenAIProvider({ apiKey: 'test-key', model: 'MiniMax-M3.1-Flash' }).reanswerQuestion('求解 2x + 3 = 7', 'zh')).answerText).toBe('x = 2');
+        // 未收录的模型用默认上限
+        await new OpenAIProvider({ apiKey: 'test-key', model: 'minimax-latest' }).reanswerQuestion('求解 2x + 3 = 7', 'zh');
+        expect(mockCompletionCreate.mock.calls.map((args) => args[0].max_tokens)).toEqual([128000, 262144]);
+        mockCompletionCreate.mockReset();
     });
 
-    it('重试后仍为空时返回 AI_OUTPUT_TRUNCATED 而不是未知错误', async () => {
+    it('用满上限仍为空时返回 AI_OUTPUT_TRUNCATED 而不是未知错误', async () => {
         const provider = new OpenAIProvider({ apiKey: 'test-key', model: 'minimax-latest' });
         mockCompletionCreate.mockResolvedValue({ choices: [{ finish_reason: 'length', message: { content: '' } }] });
 
@@ -436,7 +434,8 @@ describe('OpenAI Provider 补写语音讲解稿', () => {
         expect(await provider.generateSvgNarration('求三角形面积', '6', '底乘高除以二', narrationSvg)).toEqual(expectedNarration);
 
         const request = mockCompletionCreate.mock.calls[0][0];
-        expect(request.max_tokens).toBe(4096);
+        // gpt-4o 的最大输出
+        expect(request.max_tokens).toBe(16384);
         expect(JSON.parse(request.messages[1].content).data.questionText).toBe('求三角形面积');
         expect(JSON.parse(request.messages[1].content).data.analysis).toBe('底乘高除以二');
         expect(request.messages[0].content).toContain('总时长约 3 秒');
@@ -458,6 +457,27 @@ describe('OpenAI Provider 修复 LaTeX', () => {
 
         expect(await provider.fixLatex(latexInput)).toEqual({ answerText: '$\\frac{1}{2}$' });
         expect(JSON.parse(mockCompletionCreate.mock.calls.at(-1)?.[0].messages[1].content).data.fields.answerText).toEqual(latexInput.answerText);
+    });
+});
+
+describe('OpenAI Provider 修正题目文字', () => {
+    it('题目放在数据消息中，解析修正结果', async () => {
+        mockCompletionCreate.mockResolvedValue({ choices: [{ finish_reason: 'stop', message: { content: '{"questions":[{"id":"q1","text":"100公顷","uncertain":[]}]}' } }] });
+        const provider = new OpenAIProvider({ apiKey: 'test-key', model: 'gpt-4o' });
+
+        expect(await provider.fixQuestionText([{ id: 'q1', text: '100公项' }])).toEqual([{ id: 'q1', text: '100公顷', uncertain: [] }]);
+        const request = mockCompletionCreate.mock.calls.at(-1)?.[0];
+        expect(request.messages[0].content).toContain('【文字修正输出协议】');
+        expect(JSON.parse(request.messages[1].content).data.questions).toEqual([{ id: 'q1', text: '100公项' }]);
+        expect(request.max_tokens).toBe(16384);
+    });
+
+    it('网关返回 200 但 choices 为空时按空响应报错，不抛类型错误', async () => {
+        mockCompletionCreate.mockResolvedValue({ choices: null });
+        const provider = new OpenAIProvider({ apiKey: 'test-key', model: 'gpt-4o' });
+
+        await expect(provider.fixQuestionText([{ id: 'q1', text: '100公项' }])).rejects.toThrow('AI_UNKNOWN_ERROR');
+        expect(mockCompletionCreate.mock.calls.at(-1)?.[0].messages).toBeDefined();
     });
 });
 

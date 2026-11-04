@@ -217,24 +217,76 @@ export interface AppConfig extends VendorConfigs {
 }
 
 
+export type StatsRange = '7d' | '30d' | '6m' | 'all';
+
 export interface AnalyticsData {
     totalErrors: number;
+    newCount: number;
+    reviewingCount: number;
     masteredCount: number;
     masteryRate: number;
     subjectStats: { name: string; value: number }[];
-    activityData: { date: string; count: number }[];
+    /** 错因分布：按 mistakeStatus 分组（not_attempted / wrong_attempt / unknown） */
+    mistakeStatusStats: { name: string; value: number }[];
+    /** 错误类型分布：按 errorType 分组，自由文本取前 7 个，其余合并为 __other__ */
+    errorTypeStats: { name: string; value: number }[];
+    /** 难度分布：按 difficultyStars 分组，始终返回 1~5 星，未评定（null）数量大于 0 时附加 */
+    difficultyStarsStats: { stars: number | null; total: number; mastered: number }[];
+    activityData: { date: string; count: number; added: number; mastered: number }[];
+    range: StatsRange;
+    granularity: 'day' | 'month';
 }
 
 export interface PracticeStatsData {
     subjectStats: { name: string; value: number }[];
     activityStats: { date: string; total: number; correct: number;[key: string]: number | string }[];
     difficultyStats: { name: string; value: number }[];
-    overallStats: { total: number; correct: number; rate: string };
+    overallStats: { total: number; correct: number; attempted: number; rate: string };
+    activeDays: number;
+    range: StatsRange;
+    granularity: 'day' | 'month';
+}
+
+/** 学习活动热力图数据 */
+export interface ActivityStatsData {
+    days: { date: string; errors: number; practices: number }[];
+    currentStreak: number;
+    longestStreak: number;
+    totalActiveDays: number;
+    subjectId?: string;
+    subjectName?: string;
+}
+
+/** 薄弱知识点排行中的一条 */
+export interface WeakTagItem {
+    tag: string;
+    tagSet: string;
+    subjectId: string | null;
+    subjectName: string;
+    total: number;
+    unmastered: number;
+    recentAttempted: number;
+    recentCorrect: number;
+    recentErrorRate: number;
+    unmasteredRatio: number;
+}
+
+export interface WeakTagsData {
+    weakTags: WeakTagItem[];
+    range: StatsRange;
+    subjectId?: string;
+    subjectName?: string;
 }
 
 export interface TagStats {
     tag: string;
     count: number;
+    /** 学科标识，如 math */
+    subject: string;
+    /** 标签体系，default 为内置体系 */
+    tagSet: string;
+    /** 计入该条统计的标签 ID（同一体系、学科下的同名标签） */
+    tagIds: string[];
 }
 
 export interface TagStatsResponse {
@@ -363,6 +415,7 @@ export interface PracticeHistoryResponse {
 export type ExamScope = 'unmastered' | 'mastered' | 'all';
 export type ExamPickRule = 'least_practiced' | 'random';
 export type ExamStatus = 'generating' | 'ready' | 'partial' | 'failed';
+export type ExamMode = 'generate' | 'original';
 
 export interface ExamPaperSummary {
     id: string;
@@ -370,6 +423,7 @@ export interface ExamPaperSummary {
     status: ExamStatus;
     scope: ExamScope;
     difficulty: string;
+    mode: ExamMode;
     requestedCount: number;
     questionCount: number;
     readyCount: number;
@@ -410,6 +464,7 @@ export interface ExamPaperDetail {
     status: ExamStatus;
     scope: ExamScope;
     difficulty: string;
+    mode: ExamMode;
     requestedCount: number;
     resultsRecordedAt: string | null;
     createdAt: string;

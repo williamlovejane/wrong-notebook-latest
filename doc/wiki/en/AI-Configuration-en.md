@@ -105,7 +105,7 @@ If a configuration has already been saved in the web UI, changing only the envir
 | Emitting SVG code | Static figures and SVG animated explanations |
 | Long enough output | Recognition results with figures and step-by-step animations |
 
-SVG figures and animations are generated as code by the language model; no image-generation API is called. Animations often need long output. When the output is truncated, the app retries once with the model's maximum output (the official limit for known models; unknown models try 65536 first and, if the API rejects it, retry with the limit read from the error); the model itself must also support that length.
+SVG figures and animations are generated as code by the language model; no image-generation API is called. Animations often need long output. Every call requests the model's maximum output directly (the official limit for known models, 262144 (256K) for unknown models; if the API rejects it, the limit is read from the error, retried and remembered); the model itself must also support that length. Relay gateways that pre-charge by `max_tokens` (such as NewAPI) need enough balance to cover the pre-charge.
 
 ## Prompts and generation rules
 
@@ -125,4 +125,4 @@ Knowledge points are chosen from the tag library matching the notebook's school 
 
 API keys are stored in the server configuration. Keep backups of `config/` safe, and only share redacted configuration, logs and error messages when reporting problems.
 
-Code entry points: [configuration](https://github.com/margrop/wrong-notebook/blob/main/src/lib/config.ts) · [provider selection](https://github.com/margrop/wrong-notebook/blob/main/src/lib/ai/index.ts) · [prompts](https://github.com/margrop/wrong-notebook/blob/main/src/lib/ai/prompts.ts).
+Code entry points: [configuration](https://github.com/margrop/wrong-notebook/tree/main/src/lib/config) · [provider selection](https://github.com/margrop/wrong-notebook/blob/main/src/lib/ai/index.ts) · [prompts](https://github.com/margrop/wrong-notebook/tree/main/src/lib/ai/prompts).

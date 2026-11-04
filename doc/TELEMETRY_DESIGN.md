@@ -53,7 +53,7 @@ flowchart LR
 ## 1. 现状事实（调研结论）
 
 ### 1.1 配置与设置
-- 应用级配置在 `config/app-config.json`：`src/lib/config.ts` 中的 `AppConfig`（L29）、`DEFAULT_CONFIG`（L124）、`getAppConfig`（L215）、`updateAppConfig`（L267）。写入用临时文件加 rename；嵌套对象要深合并，可参照 `mergeTtsConfig`。
+- 应用级配置在 `config/app-config.json`：`src/lib/config/` 中的 `AppConfig`（`types.ts`）、`DEFAULT_CONFIG`（`defaults.ts`）、`getAppConfig` 与 `updateAppConfig`（`store.ts`）。写入用临时文件加 rename；嵌套对象要深合并，可参照 `mergeTtsConfig`。
 - 管理员接口的惯例：`getServerSession` + `requireAdmin(session)`，不通过时返回 `forbidden()`（例：`src/app/api/settings/route.ts` 的 POST）。
 - 管理员设置分区的先例：`src/components/settings/debug-log-settings.tsx`，在 `settings-dialog.tsx` L191 注册。
 - 版本号取自 `src/lib/app-version.ts`，优先使用构建时注入的 `APP_VERSION`。
@@ -321,7 +321,7 @@ flowchart TD
 
 - **强制门（只拦管理员）**：
   - `GET /api/eula/status`（需要登录）返回 `{ pending, current, accepted, changes }`；普通用户请求时始终返回 `pending:false`。
-  - AppShell 中新增 hook `src/lib/use-eula-gate.ts`：当前用户是管理员且 `pending` 时，显示**无法关闭的全屏对话框**，内容包括本次变更摘要（`EULA_CHANGES`）、完整协议链接、“同意并继续”和“退出登录”两个按钮。管理员不同意就无法进入任何页面，这和 `mustChangePassword` 的门禁力度相同。
+  - AppShell 中新增 hook `src/lib/hooks/use-eula-gate.ts`：当前用户是管理员且 `pending` 时，显示**无法关闭的全屏对话框**，内容包括本次变更摘要（`EULA_CHANGES`）、完整协议链接、“同意并继续”和“退出登录”两个按钮。管理员不同意就无法进入任何页面，这和 `mustChangePassword` 的门禁力度相同。
   - 门禁放在客户端，不放在 proxy：proxy 只信 JWT，同意状态在 app-config 中，而且需要实时读取。真正的约束在服务端：`consentPending` 时外发暂停（§2.1），所有 `/api/admin/*` 写操作返回 409 `EULA_PENDING`，只有同意接口和 `GET` 类接口除外。
   - `POST /api/admin/eula/accept`（requireAdmin + `{version}` 必须等于当前版本）：写入同意状态，记录 `eula_accepted {trigger:'upgrade'}`，外发自动恢复。
 - **普通用户不受影响**：可以继续正常使用；协议升级期间实例只是暂停外发。
@@ -520,7 +520,7 @@ model DailyUsage {
 - `src/app/api/telemetry/route.ts`
 - `src/app/api/admin/telemetry/route.ts`（GET / POST / DELETE）
 - `src/app/api/eula/status/route.ts`、`src/app/api/admin/eula/accept/route.ts`
-- `src/lib/use-eula-gate.ts`、`src/components/eula/eula-upgrade-dialog.tsx`、`src/components/eula/eula-consent-dialog.tsx`
+- `src/lib/hooks/use-eula-gate.ts`、`src/components/eula/eula-upgrade-dialog.tsx`、`src/components/eula/eula-consent-dialog.tsx`
 - `src/components/settings/telemetry-settings.tsx`、`src/components/telemetry-notice-banner.tsx`
 - `src/components/initialize/eula-consent.tsx`
 - `src/app/error.tsx`、`src/app/global-error.tsx`、`src/app/eula/page.tsx`
@@ -528,7 +528,7 @@ model DailyUsage {
 - 测试：`unit/telemetry-schema`、`telemetry-sanitize`、`telemetry-client`、`ingest-contract`、`eula`；`integration/telemetry-route`、`telemetry-outbox`、`admin-telemetry-route`、`eula-routes`；`e2e/eula-and-telemetry.spec.ts`
 
 **修改**
-- `src/lib/config.ts`、`prisma/schema.prisma`、`src/lib/rate-limit.ts`、`src/lib/api-errors.ts`
+- `src/lib/config/`、`prisma/schema.prisma`、`src/lib/rate-limit.ts`、`src/lib/api-errors.ts`
 - 高价值路由的 catch 块、`src/lib/frontend-logger.ts`（全局监听追加上报）、`src/instrumentation.ts`（外发队列和清理）
 - `src/app/api/initialize/route.ts`、`src/components/initialize/initialize-form.tsx`
 - `src/lib/initial-admin.ts`、`src/lib/initialization.ts`

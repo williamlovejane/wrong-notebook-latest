@@ -5,12 +5,15 @@ import {
     generateAnalyzePrompt, generateSimilarQuestionPrompt, generateReanswerPrompt,
     generateGeogebraPrompt, generateMasteryPrompt, generateGradingPrompt,
     generateTagSuggestPrompt, generateFigurePrompt, generateSvgAnimationPrompt,
-    generateSvgNarrationPrompt, generateLatexFixPrompt, generateGradeRecognitionPrompt,
+    generateSvgNarrationPrompt, generateLatexFixPrompt, generateGradeRecognitionPrompt, generateQuestionSplitPrompt,
+    generateTextFixPrompt,
     SVG_ANIMATION_REQUEST, SVG_NARRATION_REQUEST,
 } from './prompts';
 import type { PromptOptions, PromptRequest, LatexFixField } from './prompts';
 import type { AnswerGradingInput, GradeLevel, MasteryEvaluationInput, TagSuggestionInput } from './types';
 import type { LatexFixInput } from './latex-fix';
+import type { QuestionSplitInput } from './question-split';
+import type { TextFixInput } from './text-fix';
 
 // 只有受限的控制值可以进入系统规则；所有自由文本通过 JSON 数据消息传递。
 function safeGrade(value?: string | null): string | null {
@@ -123,4 +126,29 @@ export function generateSvgAnimationRequest(questionText: string, answerText: st
 
 export function generateSvgNarrationRequest(questionText: string, answerText: string, analysis: string, svgAnimation: string, language: 'zh' | 'en' = 'zh'): PromptRequest {
     return createPromptRequest(generateSvgNarrationPrompt(ref('questionText'), ref('answerText'), ref('analysis'), ref('svgAnimation'), language, getSvgAnimationDuration(svgAnimation)), { questionText, answerText, analysis, svgAnimation: embedNarration(svgAnimation, null) }, SVG_NARRATION_REQUEST[language]);
+}
+
+/** 分题请求：文字按行编号放入 data.lines；图片分题的图片由提供商作为图片内容块随本请求发送 */
+export function generateQuestionSplitRequest(input: QuestionSplitInput): PromptRequest {
+    if (input.kind === 'text') {
+        return createPromptRequest(
+            generateQuestionSplitPrompt('text'),
+            { lines: input.lines.map((text, index) => ({ n: index + 1, text })) },
+            '请按系统规则把 data.lines 中的文字分成独立的题目，只输出 JSON。',
+        );
+    }
+    return createPromptRequest(
+        generateQuestionSplitPrompt('image'),
+        {},
+        '请按系统规则找出图片中的每一道题及其位置，只输出 JSON。',
+    );
+}
+
+/** 修正题目文字：题目放在 data.questions，系统规则中不含任何题目文字 */
+export function generateTextFixRequest(input: TextFixInput): PromptRequest {
+    return createPromptRequest(
+        generateTextFixPrompt(),
+        { questions: input.map(({ id, text }) => ({ id, text })) },
+        '请按系统规则逐题整理 data.questions 中的题目文字，只输出 JSON。',
+    );
 }

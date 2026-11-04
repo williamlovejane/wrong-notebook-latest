@@ -73,6 +73,7 @@ export default function YuwenPage() {
             semester,
             list,
         });
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- 数据请求：进入页面或筛选变化时加载，请求前后更新加载状态
         setLoading(true);
         apiClient
             .get<TextbookResponse>(`/api/yuwen/textbook?${params.toString()}`)

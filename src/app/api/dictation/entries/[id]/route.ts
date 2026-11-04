@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
-import { unauthorized, badRequest, notFound, internalError } from "@/lib/api-errors";
+import { unauthorized, notFound, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
 
 const logger = createLogger("api:dictation:entries:id");

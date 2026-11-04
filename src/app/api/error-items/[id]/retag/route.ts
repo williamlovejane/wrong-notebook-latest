@@ -1,14 +1,18 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/current-user";
 import { prisma } from "@/lib/prisma";
-import { unauthorized, notFound, badRequest, internalError } from "@/lib/api-errors";
+import { notFound, badRequest, internalError } from "@/lib/api-errors";
+import { withUser } from "@/lib/api-handler";
+import type { AuthenticatedContext } from "@/lib/api-handler";
 import { createLogger } from "@/lib/logger";
 import { describeQuestion, trackBackgroundTask } from "@/lib/background-tasks";
-import { previewRetagErrorItem, retagErrorItem } from "@/lib/retag";
+import { previewRetagErrorItem, retagErrorItem } from "@/lib/tags/retag";
 import { consumeAiQuota } from "@/lib/ai-quota";
 import { withRecoverableResponse } from "@/lib/recoverable-response";
+import { retagSchema } from "@/lib/schemas/error-items";
 
 const logger = createLogger('api:error-items:retag');
+
+type RouteContext = { params: Promise<{ id: string }> };
 
 /**
  * POST /api/error-items/:id/retag
@@ -17,17 +21,13 @@ const logger = createLogger('api:error-items:retag');
  */
 async function handlePost(
     req: Request,
-    { params }: { params: Promise<{ id: string }> }
+    { user, params }: RouteContext & AuthenticatedContext
 ) {
     const { id } = await params;
 
     try {
-        const user = await getCurrentUser();
-        if (!user) {
-            return unauthorized("Authentication required");
-        }
-
-        const body = await req.json().catch(() => ({})) as { preview?: unknown };
+        const parsed = retagSchema.safeParse(await req.json().catch(() => ({})));
+        const preview = parsed.success && parsed.data.preview === true;
         const item = await prisma.errorItem.findUnique({ where: { id }, select: { userId: true, shortId: true, questionText: true } });
         if (!item || item.userId !== user.id) {
             return notFound("Item not found");
@@ -37,7 +37,7 @@ async function handlePost(
 
         const result = await trackBackgroundTask(
             { userId: user.id, kind: 'retag', subject: describeQuestion(item), link: `/error-items/${id}` },
-            () => body.preview === true ? previewRetagErrorItem(id, user.id) : retagErrorItem(id, user.id)
+            () => preview ? previewRetagErrorItem(id, user.id) : retagErrorItem(id, user.id)
         );
         return NextResponse.json(result);
     } catch (error) {
@@ -55,4 +55,4 @@ async function handlePost(
 }
 
 /** 耗时 AI 请求：浏览器中断连接后，前端可通过 /api/requests/:id 取回响应 */
-export const POST = withRecoverableResponse(handlePost);
+export const POST = withRecoverableResponse(withUser(handlePost));

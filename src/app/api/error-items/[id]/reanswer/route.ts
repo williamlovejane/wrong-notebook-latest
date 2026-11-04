@@ -1,15 +1,19 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAIService } from "@/lib/ai";
-import { getCurrentUser } from "@/lib/current-user";
-import { unauthorized, notFound, badRequest, internalError } from "@/lib/api-errors";
+import { notFound, badRequest, internalError } from "@/lib/api-errors";
+import { withUser } from "@/lib/api-handler";
+import type { AuthenticatedContext } from "@/lib/api-handler";
 import { createLogger } from "@/lib/logger";
 import { describeQuestion, trackBackgroundTask } from "@/lib/background-tasks";
 import { resolveNotebookScope, SUBJECT_DISPLAY_NAMES } from "@/lib/notebook-scope";
 import { consumeAiQuota } from "@/lib/ai-quota";
 import { withRecoverableResponse } from "@/lib/recoverable-response";
+import { reanswerSchema } from "@/lib/schemas/error-items";
 
 const logger = createLogger('api:error-items:reanswer');
+
+type RouteContext = { params: Promise<{ id: string }> };
 
 /**
  * POST /api/error-items/:id/reanswer
@@ -18,16 +22,11 @@ const logger = createLogger('api:error-items:reanswer');
  */
 async function handlePost(
     req: Request,
-    { params }: { params: Promise<{ id: string }> }
+    { user, params }: RouteContext & AuthenticatedContext
 ) {
     const { id } = await params;
 
     try {
-        const user = await getCurrentUser();
-        if (!user) {
-            return unauthorized("Authentication required");
-        }
-
         const item = await prisma.errorItem.findUnique({
             where: { id },
             select: {
@@ -46,8 +45,8 @@ async function handlePost(
             return badRequest("NO_QUESTION_TEXT");
         }
 
-        const body = await req.json().catch(() => ({}));
-        const language = body?.language === 'en' ? 'en' : 'zh';
+        const parsed = reanswerSchema.safeParse(await req.json().catch(() => ({})));
+        const language = parsed.success && parsed.data.language === 'en' ? 'en' : 'zh';
         const scope = item.subject ? resolveNotebookScope(item.subject) : null;
         const subject = scope?.subject ? SUBJECT_DISPLAY_NAMES[scope.subject] : null;
         // 原图以 data URL 保存；文字录入的题目没有原图
@@ -80,4 +79,4 @@ async function handlePost(
 }
 
 /** 耗时 AI 请求：浏览器中断连接后，前端可通过 /api/requests/:id 取回响应 */
-export const POST = withRecoverableResponse(handlePost);
+export const POST = withRecoverableResponse(withUser(handlePost));

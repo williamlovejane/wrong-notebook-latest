@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import type { KnowledgeTag } from '@prisma/client';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
     prisma: undefined as PrismaClient | undefined,
@@ -23,11 +23,14 @@ vi.mock('@/lib/mastery', async (importOriginal) => ({
 }));
 
 import { GET as EXPORT } from '@/app/api/export/route';
+import { importImportTasks } from '@/lib/import/import-task-backup';
 import { POST as IMPORT } from '@/app/api/import/route';
 import { sanitizeFigureSvg } from '@/lib/figure-svg';
 import { embedNarration, sanitizeSvgAnimation } from '@/lib/svg-animation';
 import { encodeMp3 } from '@/lib/tts/mp3';
-import { seedChineseTags } from '@/lib/seed-chinese-tags';
+import { seedChineseTags } from '@/lib/tags/seed';
+import { BACKUP_EXTENSIONS } from '@/lib/backup-extensions';
+import type { BackupExtension } from '@/lib/backup-extensions';
 
 let database: PrismaClient;
 let directory: string;
@@ -59,6 +62,8 @@ async function clearUserData() {
     await database.knowledgeTag.deleteMany({ where: { userId: 'user-1' } });
     await database.knowledgeTag.deleteMany({ where: { isSystem: true } });
     await database.practiceRecord.deleteMany({ where: { userId: 'user-1' } });
+    await database.importTask.deleteMany({ where: { userId: 'user-1' } });
+    await database.importBatch.deleteMany({ where: { userId: 'user-1' } });
     await database.reviewSchedule.deleteMany();
     await database.paperGroup.deleteMany({ where: { userId: 'user-1' } });
 }
@@ -180,9 +185,10 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         expect(await database.knowledgeTag.count({ where: { name: '我的句式笔记' } })).toBe(1);
     });
 
-    it('导出文件使用第 3 版格式，包含 tagSet 字段', async () => {
+    it('导出文件使用第 8 版格式，包含 tagSet 字段、空的 extensions 与试卷 mode', async () => {
         const backup = await exportBackup();
-        expect(backup.version).toBe(4);
+        expect(backup.version).toBe(8);
+        expect(backup.extensions).toEqual({});
         expect(backup.paperGroups).toContainEqual(expect.objectContaining({ id: 'group-b', key: 'b', name: 'B卷' }));
         expect(backup.systemTags).toBeDefined();
         expect(backup.subjects).toEqual(
@@ -318,7 +324,7 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         const subject = await database.subject.findFirstOrThrow({ where: { userId: 'user-1' } });
         const paper = await database.examPaper.findFirstOrThrow({ where: { userId: 'user-1' }, include: { questions: { orderBy: { order: 'asc' } } } });
         expect(paper).toMatchObject({
-            title: '周测', status: 'partial', scope: 'unmastered', difficulty: 'hard', requestedCount: 2,
+            title: '周测', status: 'partial', scope: 'unmastered', difficulty: 'hard', mode: 'generate', requestedCount: 2,
             subjectIds: JSON.stringify([subject.id]), tagNames: JSON.stringify(['自定义标签']),
             resultsRecordedAt: new Date('2026-10-22T00:00:00Z'), createdAt: new Date('2026-10-21T00:00:00Z'),
         });
@@ -335,6 +341,37 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         expect(await database.examPaper.count({ where: { userId: 'user-1' } })).toBe(1);
         const examRecords = await database.practiceRecord.findMany({ where: { source: 'exam' } });
         expect(examRecords.map((record) => record.examQuestionId)).toEqual([paper.questions[0].id, paper.questions[0].id]);
+    });
+
+    it('原题直出试卷的 mode 与 original 难度随备份往返，旧文件缺省 generate', async () => {
+        await database.examPaper.create({
+            data: {
+                id: 'paper-orig', userId: 'user-1', title: '原题卷', status: 'ready', scope: 'all', difficulty: 'original', mode: 'original', requestedCount: 1,
+                subjectIds: JSON.stringify(['math']), createdAt: new Date('2026-10-23T00:00:00Z'),
+                questions: { create: [
+                    { id: 'q-orig', order: 0, errorItemId: 'item-1', sourceShortId: 'AbC234', status: 'ready', questionText: '原题', answerText: '答', analysis: '析' },
+                ] },
+            },
+        });
+        const backup = await exportBackup();
+        const origPaper = backup.examPapers.find((p: { id: string }) => p.id === 'paper-orig');
+        expect(origPaper.mode).toBe('original');
+        await clearUserData();
+        await importBackup(backup);
+        const paper = await database.examPaper.findFirstOrThrow({ where: { userId: 'user-1', title: '原题卷' } });
+        expect(paper.mode).toBe('original');
+        expect(paper.difficulty).toBe('original');
+
+        // 模拟旧版文件（无 mode 字段）：缺省 generate
+        const legacyBackup = await exportBackup();
+        delete legacyBackup.examPapers[0].mode;
+        legacyBackup.examPapers[0].difficulty = 'hard';
+        legacyBackup.version = 7;
+        await clearUserData();
+        await importBackup(legacyBackup);
+        const legacyPaper = await database.examPaper.findFirstOrThrow({ where: { userId: 'user-1' } });
+        expect(legacyPaper.mode).toBe('generate');
+        expect(legacyPaper.difficulty).toBe('hard');
     });
 
     it('云端语音随备份导入、导出：只导出与动画讲解一致的语音，不合法的跳过，已有的不重复写入', async () => {
@@ -419,5 +456,272 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         expect(item.lastPractice).toBeNull();
         expect(item.masteryProbability).toBeNull();
         expect(mocks.scheduleMasteryEvaluation).toHaveBeenCalledWith([item.id]);
+    });
+
+    it('未处理的识别导入任务随备份往返：草稿保持待校对，执行中的标记为中断，不会自动调用 AI', async () => {
+        const image = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+        const result = JSON.stringify({ questionText: '备份中的草稿题目', answerText: '答', analysis: '析', knowledgePoints: [], subject: '数学' });
+        await database.importTask.createMany({ data: [
+            { userId: 'user-1', mode: 'review', status: 'review', subjectId: 'math', targetSubjectId: 'math', imageData: image, result, timings: '{"server":{"analyze":1200}}', createdAt: new Date('2026-10-01T00:00:00Z') },
+            { userId: 'user-1', mode: 'auto', status: 'analyzing', imageData: image, createdAt: new Date('2026-10-02T00:00:00Z') },
+            { userId: 'user-1', mode: 'auto', status: 'failed', error: 'AI_TIMEOUT_ERROR', imageData: image, createdAt: new Date('2026-10-03T00:00:00Z') },
+            { userId: 'user-1', mode: 'auto', status: 'saved', imageData: '', result, createdAt: new Date('2026-10-04T00:00:00Z') },
+        ] });
+        const backup = await exportBackup();
+        expect(backup.importTasks).toHaveLength(3);
+        expect(backup.importTasks.every((task: { status: string }) => task.status !== 'saved')).toBe(true);
+
+        await clearUserData();
+        const { stats } = await importBackup(backup);
+        expect(stats.importTasksCreated).toBe(3);
+        const tasks = await database.importTask.findMany({ where: { userId: 'user-1' }, orderBy: { createdAt: 'asc' } });
+        const math = await database.subject.findFirstOrThrow({ where: { userId: 'user-1', name: '数学' } });
+        expect(tasks.map((task) => [task.status, task.error])).toEqual([
+            ['review', null],
+            ['failed', 'SERVER_RESTARTED'],
+            ['failed', 'AI_TIMEOUT_ERROR'],
+        ]);
+        // 来源标识写入幂等键，用于判断重复导入
+        expect(tasks[0]).toMatchObject({ imageData: image, subjectId: math.id, targetSubjectId: math.id, clientRequestId: expect.any(String) });
+        expect(JSON.parse(tasks[0].result!).questionText).toBe('备份中的草稿题目');
+
+        // 再次导入同一文件不重复创建
+        expect((await importBackup(backup)).stats.importTasksCreated).toBe(0);
+    });
+
+    it('未完成的多题批次随备份往返：草稿与调整保留，分题中的标记为中断，批次内任务仍关联本批，不会自动调用 AI', async () => {
+        const image = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+        const draft = JSON.stringify({
+            items: [
+                { key: 'qa', label: '1', text: '（已手工修改）计算 1 + 1。', material: null, section: null, selected: true, regions: [], hasFigure: false, flags: [] },
+                { key: 'qb', label: '2', text: '计算 2 + 2。', material: '公共材料', section: '一、计算题', selected: false, regions: [], hasFigure: false, flags: [] },
+            ],
+            ignored: ['姓名：____'], warnings: [],
+        });
+        const result = JSON.stringify({ questionText: '计算 3 + 3。', answerText: '6', analysis: '相加', knowledgePoints: [], subject: '数学' });
+        await database.importBatch.createMany({ data: [
+            { id: 'batch-draft-aaaaaaaa', userId: 'user-1', clientRequestId: 'batch-request-draft', source: 'text', splitter: 'local', status: 'draft', sourceText: '1．…\n2．…', draft, targetSubjectId: 'math', createdAt: new Date('2026-10-05T00:00:00Z') },
+            { id: 'batch-split-bbbbbbbb', userId: 'user-1', source: 'image', splitter: 'ai', status: 'splitting', imageData: image, createdAt: new Date('2026-10-06T00:00:00Z') },
+            { id: 'batch-start-cccccccc', userId: 'user-1', source: 'text', splitter: 'local', status: 'started', mode: 'review', draft, startedAt: new Date('2026-10-07T00:00:00Z'), createdAt: new Date('2026-10-07T00:00:00Z') },
+            { id: 'batch-done-dddddddd', userId: 'user-1', source: 'text', splitter: 'local', status: 'started', mode: 'auto', draft, createdAt: new Date('2026-10-08T00:00:00Z') },
+        ] });
+        await database.importTask.createMany({ data: [
+            { userId: 'user-1', mode: 'review', status: 'review', imageData: '', inputText: '计算 3 + 3。', result, batchId: 'batch-start-cccccccc', batchItemKey: 'qa', createdAt: new Date('2026-10-07T00:00:01Z') },
+            { userId: 'user-1', mode: 'review', status: 'analyzing', imageData: '', inputText: '计算 4 + 4。', batchId: 'batch-start-cccccccc', batchItemKey: 'qb', createdAt: new Date('2026-10-07T00:00:02Z') },
+            { userId: 'user-1', mode: 'auto', status: 'saved', imageData: '', result, batchId: 'batch-done-dddddddd', batchItemKey: 'qa', createdAt: new Date('2026-10-08T00:00:01Z') },
+        ] });
+        const backup = await exportBackup();
+        expect(backup.importBatches.map((batch: { id: string }) => batch.id)).toEqual(['batch-draft-aaaaaaaa', 'batch-split-bbbbbbbb', 'batch-start-cccccccc']);
+
+        await clearUserData();
+        const { stats } = await importBackup(backup);
+        expect(stats.importBatchesCreated).toBe(3);
+        const batches = await database.importBatch.findMany({ where: { userId: 'user-1' }, orderBy: { createdAt: 'asc' }, include: { tasks: { orderBy: { createdAt: 'asc' } } } });
+        const math = await database.subject.findFirstOrThrow({ where: { userId: 'user-1', name: '数学' } });
+        expect(batches.map((batch) => [batch.status, batch.error])).toEqual([['draft', null], ['failed', 'SERVER_RESTARTED'], ['started', null]]);
+        expect(batches[0]).toMatchObject({ targetSubjectId: math.id, sourceText: '1．…\n2．…', clientRequestId: 'batch-request-draft' });
+        expect(JSON.parse(batches[0].draft!)).toEqual(JSON.parse(draft));
+        expect(batches[1].imageData).toBe(image);
+        expect(batches[2].tasks.map((task) => [task.status, task.error, task.inputText, task.batchItemKey])).toEqual([
+            ['review', null, '计算 3 + 3。', 'qa'],
+            ['failed', 'SERVER_RESTARTED', '计算 4 + 4。', 'qb'],
+        ]);
+
+        // 再次导入不重复创建批次或任务
+        const again = await importBackup(backup);
+        expect(again.stats).toMatchObject({ importBatchesCreated: 0, importTasksCreated: 0 });
+        expect(await database.importBatch.count({ where: { userId: 'user-1' } })).toBe(3);
+    });
+
+    it('部分完成的批次随备份往返：已保存的题保留完成状态与错题链接，不重新识别、不重复记做错记录', async () => {
+        const result = JSON.stringify({ questionText: '批次中的题', answerText: '答', analysis: '析', knowledgePoints: [], subject: '数学' });
+        const draft = JSON.stringify({ items: ['qa', 'qb', 'qc', 'qd'].map((key) => ({ key, label: null, text: key, material: null, section: null, selected: true, regions: [], hasFigure: false, flags: [] })), ignored: [], warnings: [] });
+        // 只看本用例的批次：清掉之前用例留下的识别记录
+        await database.importBatch.deleteMany({ where: { userId: 'user-1' } });
+        await database.importTask.deleteMany({ where: { userId: 'user-1' } });
+        const saved = await database.errorItem.create({ data: { userId: 'user-1', subjectId: 'math', questionText: '批次中已入库的题', answerText: '答', originalImageUrl: '' } });
+        await database.importBatch.create({ data: { id: 'batch-partial-aaaaaaa', userId: 'user-1', source: 'text', splitter: 'local', status: 'started', mode: 'auto', draft, startedAt: new Date('2026-10-09T00:00:00Z'), createdAt: new Date('2026-10-09T00:00:00Z') } });
+        await database.importTask.createMany({ data: [
+            { userId: 'user-1', mode: 'auto', status: 'saved', imageData: '', inputText: '已入库', result, errorItemId: saved.id, batchId: 'batch-partial-aaaaaaa', batchItemKey: 'qa', finishedAt: new Date('2026-10-09T00:01:00Z'), createdAt: new Date('2026-10-09T00:00:01Z') },
+            { userId: 'user-1', mode: 'auto', status: 'saved', imageData: '', inputText: '入库后错题被删', result, duplicate: true, batchId: 'batch-partial-aaaaaaa', batchItemKey: 'qb', createdAt: new Date('2026-10-09T00:00:02Z') },
+            { userId: 'user-1', mode: 'auto', status: 'review', imageData: '', inputText: '待校对', result, batchId: 'batch-partial-aaaaaaa', batchItemKey: 'qc', createdAt: new Date('2026-10-09T00:00:03Z') },
+            { userId: 'user-1', mode: 'auto', status: 'failed', error: 'AI_TIMEOUT_ERROR', imageData: '', inputText: '失败', batchId: 'batch-partial-aaaaaaa', batchItemKey: 'qd', createdAt: new Date('2026-10-09T00:00:04Z') },
+        ] });
+        const backup = await exportBackup();
+        expect(backup.importTasks.filter((task: { batchId: string | null }) => task.batchId === 'batch-partial-aaaaaaa')).toHaveLength(4);
+
+        await clearUserData();
+        const { stats } = await importBackup(backup);
+        expect(stats).toMatchObject({ importBatchesCreated: 1, importTasksCreated: 4 });
+        const batch = await database.importBatch.findFirstOrThrow({ where: { userId: 'user-1', clientRequestId: 'batch-partial-aaaaaaa' }, include: { tasks: { orderBy: { createdAt: 'asc' } } } });
+        const restoredItem = await database.errorItem.findFirstOrThrow({ where: { userId: 'user-1', questionText: '批次中已入库的题' } });
+        expect(batch.tasks.map((task) => [task.batchItemKey, task.status, task.errorItemId, task.duplicate, task.error])).toEqual([
+            ['qa', 'saved', restoredItem.id, false, null],
+            ['qb', 'saved', null, true, null],
+            ['qc', 'review', null, false, null],
+            ['qd', 'failed', null, false, 'AI_TIMEOUT_ERROR'],
+        ]);
+        expect(batch.tasks.slice(0, 2).every((task) => task.readAt !== null)).toBe(true);
+
+        // 再次导入（不清空）：不重复创建批次、任务、错题或做错记录
+        const itemsBefore = await database.errorItem.count({ where: { userId: 'user-1' } });
+        const records = await database.practiceRecord.count({ where: { userId: 'user-1' } });
+        const again = await importBackup(backup);
+        expect(again.stats).toMatchObject({ importBatchesCreated: 0, importTasksCreated: 0 });
+        expect(await database.importTask.count({ where: { batchId: batch.id } })).toBe(4);
+        expect(await database.errorItem.count({ where: { userId: 'user-1' } })).toBe(itemsBefore);
+        // 新增的做错记录全部来自错题本身的重复导入（既有判重规则，计入 practiceRecordsCreated），还原任务不额外追加
+        expect(await database.practiceRecord.count({ where: { userId: 'user-1' } })).toBe(records + again.stats.practiceRecordsCreated);
+    });
+
+    it('旧版备份没有识别任务字段时正常导入', async () => {
+        const backup = await exportBackup();
+        delete backup.importTasks;
+        delete backup.importBatches;
+        backup.version = 4;
+        await clearUserData();
+        const { stats } = await importBackup(backup);
+        expect(stats.importTasksCreated).toBe(0);
+        expect(await database.errorItem.count({ where: { userId: 'user-1' } })).toBeGreaterThan(0);
+    });
+
+    it('导入不含 extensions 的旧版备份成功，stats.extensionsImported 为空', async () => {
+        const backup = await exportBackup();
+        delete backup.extensions;
+        backup.version = 6;
+        await clearUserData();
+        const { stats } = await importBackup(backup);
+        expect(stats.extensionsImported).toEqual({});
+        expect(await database.errorItem.count({ where: { userId: 'user-1' } })).toBeGreaterThan(0);
+    });
+
+    it('导入含未知扩展的备份成功并跳过，stats.extensionsImported 不含未知 key', async () => {
+        const backup = await exportBackup();
+        backup.extensions = { 'unknown-ext': { version: 1, data: { foo: 'bar' } } };
+        await clearUserData();
+        const { stats } = await importBackup(backup);
+        expect(stats.extensionsImported).toEqual({});
+        expect(await database.errorItem.count({ where: { userId: 'user-1' } })).toBeGreaterThan(0);
+    });
+
+    it('同一时间同一图片的不同任务全部还原；按来源标识判断重复导入，再次导出保留来源标识', async () => {
+        const image = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+        const createdAt = new Date('2026-10-05T00:00:00Z');
+        const draft = (questionText: string) => JSON.stringify({ questionText, answerText: '答', analysis: '析', knowledgePoints: [], subject: '数学' });
+        await database.importTask.createMany({ data: [
+            { id: 'source-task-aaaaaaaa', clientRequestId: 'client-request-aaaa', userId: 'user-1', mode: 'review', status: 'review', imageData: image, result: draft('第一份草稿'), createdAt },
+            // 旧数据没有幂等键时用任务编号作为来源标识
+            { id: 'source-task-bbbbbbbb', userId: 'user-1', mode: 'review', status: 'review', imageData: image, result: draft('第二份草稿'), createdAt },
+        ] });
+        const backup = await exportBackup();
+        expect(backup.importTasks.map((task: { clientRequestId: string | null }) => task.clientRequestId).sort()).toEqual(['client-request-aaaa', null]);
+        // 原任务仍在时导入同一备份不重复创建
+        expect((await importBackup(backup)).stats.importTasksCreated).toBe(0);
+
+        await clearUserData();
+        expect((await importBackup(backup)).stats.importTasksCreated).toBe(2);
+        const drafts = await database.importTask.findMany({ where: { userId: 'user-1' }, orderBy: { clientRequestId: 'asc' } });
+        expect(drafts.map((task) => [task.clientRequestId, JSON.parse(task.result!).questionText])).toEqual([
+            ['client-request-aaaa', '第一份草稿'],
+            ['source-task-bbbbbbbb', '第二份草稿'],
+        ]);
+
+        // 重复导入同一备份、再次导出后导入都不重复创建，来源标识保持不变
+        expect((await importBackup(backup)).stats.importTasksCreated).toBe(0);
+        const again = await exportBackup();
+        expect(again.importTasks.map((task: { clientRequestId: string }) => task.clientRequestId).sort()).toEqual(['client-request-aaaa', 'source-task-bbbbbbbb']);
+        expect((await importBackup(again)).stats.importTasksCreated).toBe(0);
+        expect(await database.importTask.count({ where: { userId: 'user-1' } })).toBe(2);
+    });
+
+    it('跨账户恢复同一备份：原任务仍属于其他账户时，目标账户只创建一次且不影响原账户', async () => {
+        const image = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+        const draft = (questionText: string) => JSON.stringify({ questionText, answerText: '答', analysis: '析', knowledgePoints: [], subject: '数学' });
+        const createdAt = new Date('2026-10-06T00:00:00Z');
+        await database.importTask.createMany({ data: [
+            { id: 'cross-task-aaaaaaaa', clientRequestId: 'cross-request-aaaa', userId: 'user-1', mode: 'review', status: 'review', imageData: image, result: draft('草稿 A'), createdAt },
+            { id: 'cross-task-bbbbbbbb', clientRequestId: 'cross-request-bbbb', userId: 'user-1', mode: 'review', status: 'review', imageData: image, result: draft('草稿 B'), createdAt },
+        ] });
+        const backup = await exportBackup();
+        await database.user.upsert({ where: { email: 'backup-other@example.com' }, update: {}, create: { id: 'backup-other', email: 'backup-other@example.com', password: 'test-only' } });
+        const restore = (tasks: unknown) => database.$transaction((tx) => importImportTasks(tx, tasks, {
+            resolveUserId: () => 'backup-other', subjectIdMap: new Map(), paperGroupIdMap: new Map(),
+        }));
+        expect(await restore(backup.importTasks)).toBe(2);
+        expect(await restore(backup.importTasks)).toBe(0);
+        const restored = await database.importTask.findMany({ where: { userId: 'backup-other' } });
+        expect(restored).toHaveLength(2);
+        expect(restored.map((task) => task.id)).not.toContain('cross-task-aaaaaaaa');
+        // 目标账户再次导出后导入仍按来源判断
+        const reexported = restored.map((task) => ({ ...task, createdAt: task.createdAt.toISOString(), finishedAt: task.finishedAt?.toISOString() ?? null }));
+        expect(await restore(reexported)).toBe(0);
+        expect(await database.importTask.count({ where: { userId: 'backup-other' } })).toBe(2);
+        // 原账户的任务不受影响
+        expect(await database.importTask.count({ where: { userId: 'user-1' } })).toBe(2);
+        expect(JSON.parse((await database.importTask.findUniqueOrThrow({ where: { id: 'cross-task-aaaaaaaa' } })).result!).questionText).toBe('草稿 A');
+        await database.user.delete({ where: { id: 'backup-other' } });
+    });
+
+    describe('备份扩展（BACKUP_EXTENSIONS）', () => {
+        const testExt: BackupExtension = {
+            key: 'test-bank',
+            version: 1,
+            export: vi.fn().mockResolvedValue({ bankItems: ['a', 'b'] }),
+            import: vi.fn().mockResolvedValue(3),
+        };
+        const failingExt: BackupExtension = {
+            key: 'test-fail',
+            version: 1,
+            export: vi.fn().mockResolvedValue(null),
+            import: vi.fn().mockRejectedValue(new Error('extension boom')),
+        };
+
+        afterEach(() => {
+            for (const ext of [testExt, failingExt]) {
+                const idx = BACKUP_EXTENSIONS.indexOf(ext);
+                if (idx >= 0) BACKUP_EXTENSIONS.splice(idx, 1);
+            }
+        });
+
+        it('导出时 extensions 带上已注册扩展的 version 和 data', async () => {
+            BACKUP_EXTENSIONS.push(testExt);
+            const backup = await exportBackup();
+            expect(backup.extensions['test-bank']).toEqual({ version: 1, data: { bankItems: ['a', 'b'] } });
+            expect(testExt.export).toHaveBeenCalledWith({ userIds: ['user-1'] });
+        });
+
+        it('导入时扩展收到正确的 ID 映射和 userIdMap', async () => {
+            BACKUP_EXTENSIONS.push(testExt);
+            const backup = await exportBackup();
+            await clearUserData();
+            await importBackup(backup);
+
+            expect(testExt.import).toHaveBeenCalledTimes(1);
+            const [ctx, payload] = vi.mocked(testExt.import).mock.calls[0];
+            expect(payload).toEqual({ version: 1, data: { bankItems: ['a', 'b'] } });
+            // errorItemIdMap 把旧 ID 映射到数据库中真实存在的新 ID
+            const newItem = await database.errorItem.findFirstOrThrow({ where: { userId: 'user-1' } });
+            expect(ctx.errorItemIdMap.get('item-1')).toBe(newItem.id);
+            // userIdMap(旧 userId) 返回当前用户
+            expect(ctx.userIdMap('user-1')).toBe('user-1');
+        });
+
+        it('扩展 import 抛错时整个导入事务回滚', async () => {
+            BACKUP_EXTENSIONS.push(failingExt);
+            const backup = await exportBackup();
+            await clearUserData();
+            const itemsAfterClear = await database.errorItem.count({ where: { userId: 'user-1' } });
+            expect(itemsAfterClear).toBe(0);
+
+            // 导入应失败（扩展抛错导致事务回滚）
+            const response = await IMPORT(new Request('http://localhost/api/import', {
+                method: 'POST',
+                body: JSON.stringify(backup),
+                headers: { 'Content-Type': 'application/json' },
+            }));
+            expect(response.status).toBe(500);
+            // 核心数据回滚到导入前（清空后）的状态
+            expect(await database.errorItem.count({ where: { userId: 'user-1' } })).toBe(itemsAfterClear);
+        });
     });
 });

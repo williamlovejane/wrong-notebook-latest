@@ -42,7 +42,7 @@ wrong-notebook --port 3000 --host 0.0.0.0 --data-dir ~/.wrong-notebook
 - 服务只监听 `127.0.0.1`，默认端口 39300，被占用时自动顺延。
 - 数据目录：Windows `%APPDATA%\WrongNotebook\data`，macOS `~/Library/Application Support/WrongNotebook/data`，Linux `~/.config/WrongNotebook/data`。服务日志在数据目录的 `logs/server.log`。
 - 卸载不会删除数据目录。
-- 当前 Windows 安装包仍未签名，可能出现 SmartScreen 提示，选择「仍要运行」。项目正在申请 SignPath Foundation，获批后的构建可按 [Windows 签名配置](WINDOWS_SIGNING.md)接入；实际签名范围和职责见 [Code signing policy](CODE_SIGNING.md)，数据处理见[隐私说明](PRIVACY.md)。
+- 当前 Windows 安装包仍未签名，可能出现 SmartScreen 提示，选择「仍要运行」。项目已通过 SignPath Foundation 审核，正在用测试证书接入，取得生产证书后按 [Windows 签名配置](WINDOWS_SIGNING.md)启用；实际签名范围和职责见 [Code signing policy](CODE_SIGNING.md)，数据处理见[隐私说明](PRIVACY.md)。
 - macOS 安装包未经 Apple 签名，提示「已损坏」或无法打开时，执行 `xattr -cr /Applications/WrongNotebook.app` 和 `codesign --force --deep --sign - /Applications/WrongNotebook.app`（移除隔离属性并在本机重新自签名）。
 - Linux 的 Prisma 引擎需要 OpenSSL 3（Ubuntu 22.04、Debian 12 及更新版本）。
 
@@ -91,7 +91,7 @@ App 切到后台后系统可能结束服务端进程，回到前台时会自动�
 
 两种 App 都补齐了 WebView 默认不具备的能力：
 
-- 上传图片时可选择拍照或从相册、文件中选取。
+- 网页的「拍照」「相册」「从文件选择」分别打开系统相机、照片选择器（Android 13 起为系统照片选择器）和文件选择器；拍照调用系统相机应用，App 不申请相机权限，相机不可用时提示改用相册或文件。「从文件选择」不限类型，图片类入口额外列出 HEIC/HEIF 类型，便于选到被系统标成未知类型的照片。
 - 导出备份、下载试卷等文件通过系统「另存为」保存。
 - 打印预览中的「打印」调用系统打印，可另存为 PDF。
 - 错题本以外的链接（项目主页、AI 服务商控制台等）用系统浏览器打开。
@@ -120,7 +120,7 @@ node scripts/package/build.mjs android                # 单机版和客户端版
 - 安卓 Prisma 引擎：Prisma 不提供安卓版本，`build-android-prisma-engines.sh` 按项目安装的 Prisma 版本下载对应提交的 prisma-engines 源码，用 Android NDK（`ANDROID_NDK_HOME`）和 rustup 交叉编译查询引擎与迁移引擎，约需 15–30 分钟。输出目录默认 `dist/android-prisma-engines`，可用 `ANDROID_PRISMA_ENGINES_DIR` 指定。
 - `patchelf`（可用 `PATCHELF` 指定路径）和 `zip`。
 
-单机版内置的 Node.js 取自 [Termux](https://termux.dev) 软件源的 `nodejs-lts` 及其依赖库（构建时按软件源索引校验 SHA256，可用 `TERMUX_MIRROR` 指定镜像）。安卓只允许执行 `nativeLibraryDir` 中的程序，因此 Node.js、依赖库和引擎都以 `lib*.so` 的形式放进 `jniLibs/arm64-v8a`，由 `scripts/package/android-runtime.mjs` 改名并用 patchelf 改写依赖；服务端打包为 `assets/server.zip`，首次启动时解压。各组件的许可证随 APK 放在 `assets/licenses/`。
+单机版内置的 Node.js 取自 [Termux](https://termux.dev) 软件源的 `nodejs-lts` 及其依赖库（构建时按软件源索引校验 SHA256，可用 `TERMUX_MIRROR` 指定镜像）。安卓只允许执行 `nativeLibraryDir` 中的程序，因此 Node.js、依赖库和引擎都以 `lib*.so` 的形式放进 `jniLibs/arm64-v8a`，由 `scripts/package/android-runtime.mjs` 改名并用 patchelf 改写依赖；服务端打包为 `assets/server.zip`，首次启动时解压。各组件的许可证随 APK 放在 `assets/licenses/`。网页端按需加载的 HEIC/HEIF 转换组件（heic-to 及其包含的 libheif、libde265）的第三方说明与许可证位于 `public/third-party-licenses/heic-to/`，随服务端 `public/` 目录进入 Docker 镜像、npm 包、桌面版、飞牛OS 安装包和单机版的 `server.zip`。
 
 versionCode 由版本号换算（`scripts/package/android-version.mjs`）：预览版 `2026.10.22-3` 为 `2026102203`，正式版 `2026.10.22` 为 `2026102299`，保证升级时递增。
 

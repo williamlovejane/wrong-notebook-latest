@@ -6,7 +6,7 @@ Web export is for moving personal learning data; restoring a whole site requires
 
 | Method | Contents | Use |
 | --- | --- | --- |
-| Web JSON export | Notebooks, system and custom tags, questions, review schedules, practice records, random exam papers and some profile data | Keeping personal data, importing supported fields |
+| Web JSON export | Notebooks, system and custom tags, questions, review schedules, practice records, random exam papers, unprocessed recognition tasks and some profile data | Keeping personal data, importing supported fields |
 | Full-site file backup | The complete SQLite database, `config/`, deployment configuration and any certificates | Disaster recovery, moving the site, preparing a rollback before upgrades |
 
 The JSON export does not include full user accounts with passwords or the server AI configuration. Even when an admin exports all data, it does not replace a full-site backup.
@@ -18,6 +18,12 @@ Export JSON from the data management section in the settings and keep it safe. W
 System and custom tags retain their tag system and parent-child hierarchy. Identically named chapters and knowledge points under different grades are restored separately, and questions reconnect to the specific nodes recorded in the backup. This includes Chinese grades, chapters, knowledge points and custom tags beneath them. Import supports older backups whose child nodes appear before their parents; repeating an import does not duplicate tags at the same path.
 
 Question figures, GeoGebra demos, Chinese and English SVG animations with their synthesized cloud voice (MP3), the latest similar question and mastery probability are all restored from the export file; SVG is sanitized again on import, and questions without a mastery probability are re-evaluated after import. Exam papers are restored together with their questions and every recorded result; questions still being generated at export time show as failed after import and can be regenerated on the exam page. Importing your own export file also restores preferences such as the question grade rule and fixed grade, review before import, the duplicate threshold, GeoGebra demos, SVG animations and the interface theme.
+
+Export files use version 8, which includes unprocessed recognition tasks (drafts awaiting review and failed tasks, with the question image or question text and the recognition result) and unfinished multi-question batches (split drafts with your adjustments, batches whose split failed, and started batches with questions not yet imported); saved tasks and fully imported batches are not exported. On import, review drafts and split drafts stay as they were; all other tasks, including those still recognizing or saving at export time, show as failed, and batches that were still splitting show as split failed, so you can retry them when needed. Importing never calls the AI. Tasks of a batch stay in their batch after import, and importing the same file again creates nothing new. Older backups without these fields import as before.
+
+Version 7 adds an `extensions` namespace for fork projects to store private extension data (such as question-bank metadata). `extensions` is organized as `<key>: { version, data }`; each extension manages its own version. The upstream exports an empty object `{}` by default; on import, unregistered keys are safely skipped with a warning, and extensions newer than the running program are skipped as well. Fork projects can register extensions in the `BACKUP_EXTENSIONS` array in `src/lib/backup-extensions.ts`.
+
+Version 8 adds a `mode` field to `examPapers` (`generate` for similar questions / `original` for original questions). Older files without this field import as `generate`.
 
 Import merges existing notebooks and tags and handles duplicates by question similarity. A duplicate may add another wrong attempt under the existing question, so importing the same file repeatedly can change the practice history.
 

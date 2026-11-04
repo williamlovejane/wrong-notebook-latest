@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { isAllHanzi } from "@/lib/dictation/pool";
 import { isDictationKind, type DictationKind } from "@/lib/dictation/types";
-import { initialDueDate, describeStage } from "@/lib/dictation/schedule";
+import { initialDueDate, describeStage, type CardStatus } from "@/lib/dictation/schedule";
 import { resolveDebugNow } from "@/lib/dictation/debug-time";
 import { unauthorized, badRequest, internalError } from "@/lib/api-errors";
 import { lookupCharOrigin } from "@/lib/yuwen/db";
@@ -71,7 +71,7 @@ export async function GET(req: Request) {
                           dueAt: e.card.dueAt,
                           correctCount: e.card.correctCount,
                           wrongCount: e.card.wrongCount,
-                          stageLabel: describeStage(e.card.stage, e.card.status as any).label,
+                          stageLabel: describeStage(e.card.stage, e.card.status as CardStatus).label,
                       }
                     : null,
                 createdAt: e.createdAt,
