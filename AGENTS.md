@@ -1,5 +1,11 @@
 # AGENTS.md
 
+> **【本 fork 必读 · 优先级最高】** 本仓库是 `margrop/wrong-notebook` 的 fork，采用「`main` 纯镜像上游 + `release` 承载自定义开发」的双分支模式。下文及 `doc/BRANCH_WORKFLOW.md` 中来自上游的「`main` 为公开主线」「公开远程名为 `github`」「私有部署分支」「推送前运行 `scripts/check-public-history.py`」等约定**不适用于本仓库**。分支、远程、提交与同步规则一律以 **[`doc/FORK_SYNC.md`](doc/FORK_SYNC.md)** 为准。
+>
+> 三条铁律：① 只在 `release` 上开发与提交，推 `origin release`；② `main` 只快进镜像上游，禁止提交、禁止强推；③ 同步上游一律用根目录 `./sync-upstream.sh`（`fetch-only` 或默认 `merge`），禁止用网页 `Sync fork` 覆盖 `release`，禁止让 CI 自动合并上游进 `release`。
+>
+> `git clone` 后默认停在纯镜像 `main`，**必须先 `git checkout release` 再开发**。提交时显式列出文件，不要 `git add -A`（`.workbuddy/memory/2026-11-03.md` 有本地修改，不可提交）。本段由 fork 维护者添加，合并上游更新时请保留。
+
 本文件为在本仓库工作的 AI 代理（Claude Code、Codex、Cursor 等）提供约定。
 
 ## 项目概览

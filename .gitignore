@@ -83,3 +83,8 @@ __pycache__/
 # 安装包构建产物
 /dist/
 scripts/data/
+
+# AI 工具本地数据（fork 维护者添加，不纳入版本控制）
+# 注意：.workbuddy/memory/2026-11-03.md 是历史遗留的已跟踪文件，仍会被 git 追踪
+.workbuddy-ai/
+.workbuddy/
