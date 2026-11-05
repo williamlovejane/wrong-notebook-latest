@@ -33,12 +33,14 @@
 2. **`main` 永远不提交自己的代码，不 force push，不在网页上手动改**。它一旦和上游分叉，同步脚本会拒绝工作并要求人工处理。
 3. **不要绕过同步流程**：不要用 GitHub 网页的 `Sync fork` 去覆盖 `release`，不要让 CI/定时任务自动把上游 merge 进 `release`（CI 解不了冲突），不要对 `release` 做 `hardreset` 到上游。
 
-> 目前远端默认分支（origin/HEAD）仍是 `main`，所以 `git clone` 后**第一件事必须是 `git checkout release`**，否则会在纯镜像分支上开发。建议维护者在 GitHub 仓库设置中把默认分支改成 `release`。
+> **默认分支：2026-11-05 起 GitHub 远端 `origin/HEAD` 已由 `main` 改为 `release`**，`git clone` 后直接停在可开发的分支。从旧 clone 或历史工作副本继续工作时，仍要先 `git branch --show-current` 确认在 `release`；`main` 只是纯镜像，不要切过去写代码。
+>
+> **重要副作用**：按 GitHub 文档，网页 `Sync fork` 同步的是 fork 的**默认分支**与上游默认分支。默认分支改为 `release` 后，该按钮不再作用于纯镜像 `main`，而是可能直接把上游 `main` 往承载全部开发的 `release` 上合并（冲突时会提示改走 PR）。本仓库因此**一律禁止使用网页 `Sync fork`**，同步上游只能走 `./sync-upstream.sh`。同样不要用 `gh repo sync` 指向 `release`。
 
 ## 3. 日常开发
 
 ```bash
-git checkout release                 # clone 后必做；确认分支再动手
+git branch --show-current            # 应为 release；旧 clone 用 git checkout release 切回来
 # ... 开发、测试、提交 ...
 git push origin release              # 自定义内容只推 release
 ```
@@ -84,7 +86,7 @@ git push origin release              # 自定义内容只推 release
 
 ## 6. 明确禁止
 
-- 在 `main` 上提交、`git push --force` `main`、用网页 `Sync fork` 覆盖 `release`。
+- 在 `main` 上提交、`git push --force` `main`、使用网页 `Sync fork` 或 `gh repo sync -b release`（默认分支已是 `release`，这些操作会直接碰到开发分支）。
 - 把 `wttwins` / `old-fork` / `margrop` 当同步目标；同步源只认 `upstream`。
 - 删除 `AGENTS.md` 顶部的「本 fork 必读」段落或本文。
 - 提交 AI 工具本地数据：`.workbuddy-ai/`、`.workbuddy/` 已在 `.gitignore` 中排除。注意 `.workbuddy/memory/2026-11-03.md` 是历史遗留的**已跟踪文件**且长期带有本地修改，gitignore 对它无效——**不要 `git add .` 把它带上，也不要提交它的本地改动**。提交时显式列出文件，别用 `git add -A`。
@@ -95,7 +97,7 @@ git push origin release              # 自定义内容只推 release
 ```bash
 git clone git@github.com:williamlovejane/wrong-notebook-latest.git
 cd wrong-notebook-latest
-git checkout release                                    # 必须，默认分支是纯镜像 main
+git checkout release                                    # 默认分支已是 release；旧 clone 务必确认
 git remote add upstream https://github.com/margrop/wrong-notebook.git
 git config rerere.enabled true
 ./sync-upstream.sh fetch-only                            # 验证链路可用
@@ -111,6 +113,7 @@ git config rerere.enabled true
 - 新建 `main` 指向 `origin/main`（`ae89afc2`），与 `upstream/main` 完全一致。
 - 回滚锚点：本地 tag `backup/pre-migration-20261105` = `53f56cdb`。
 - remote 整理：旧 `origin` 改名为 `old-fork`、`origin` 切到新 fork；误指向 `wttwins` 的 `upstream` 改名为 `wttwins`，新建正确的 `upstream`。
+- 同日把 GitHub 远端默认分支由 `main` 改为 `release`（通过 `gh api -X PATCH repos/... -f default_branch=release`），本地用 `git remote set-head origin -a` 跟随；`git ls-remote --symref origin HEAD` 应指向 `refs/heads/release`。
 
 需要核对结构是否健康时：
 
