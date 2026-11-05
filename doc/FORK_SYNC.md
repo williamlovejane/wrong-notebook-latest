@@ -69,6 +69,33 @@ git push origin release              # 自定义内容只推 release
 
 同步后请检查改动、跑测试（至少 `npm run lint` 与相关测试），再 `git push origin release`。上游更新频繁时，`fetch-only` 可以每天跑，合并保持每周或每个里程碑一次即可。
 
+### 只更新 `main` 的其它方式
+
+脚本不在手边、或只想动远端时可用下面两种（均**不影响 `release`**）：
+
+```bash
+# A. GitHub CLI —— 必须显式 -b main，否则同步的是现在的默认分支 release
+gh repo sync williamlovejane/wrong-notebook-latest \
+  -b main --source margrop/wrong-notebook
+# 它只更新远端；本地 ref 跟进：
+git fetch origin && git update-ref refs/heads/main refs/remotes/origin/main
+```
+
+**绝对不要加 `--force`**（会 hard reset 目标分支），也**不要省略 `-b main`**。
+
+```bash
+# B. 纯 git —— 等价于脚本的 fetch-only，全程不切分支
+git fetch upstream --prune
+UP="$(git rev-parse upstream/main)"
+git push origin "${UP}:refs/heads/main"
+git update-ref refs/heads/main "${UP}"
+git fetch origin --prune
+```
+
+B 少了「`main` 是否仍为上游祖先」的校验，所以日常仍以脚本为准。网页 `Sync fork` **不可用**（默认分支已是 `release`，按钮会直接作用于开发分支）；跨仓库 PR 同步 `main` 理论上可行，但会产生 merge commit、绕且易错，不推荐。
+
+想无人值守可用 GitHub Actions 定时快进 `main`，但注意：workflow 必须放在**默认分支 `release`** 上 `schedule` 才会生效，fork 的 Actions 默认关闭，约 60 天无活动后定时任务会被自动停用；只让它更新 `main`，绝不自动把上游合并进 `release`。
+
 ## 5. 冲突处理
 
 - 冲突**只应出现在 `release ← main` 这一步**，这正是分层设计的目的；`main` 的快进永远零冲突。
