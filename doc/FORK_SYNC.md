@@ -119,3 +119,5 @@ git rev-parse main upstream/main origin/main   # 三者必须相同
 git log --oneline main..release | head         # 应只列出自定义提交
 git remote -v                                  # upstream 必须是 margrop
 ```
+
+> 上文的 `ae89afc2` / `53f56cdb` 只是**迁移当时的快照**。`main` 会随上游持续快进（2026-11-05 当天即从 `ae89afc2` 前进到 `196ab3c9`，由 `./sync-upstream.sh fetch-only` 完成），`release` 也会随开发推进。判断结构是否健康看「`main` / `upstream/main` / `origin/main` 三者一致」和 remote 指向，不要比对文档里的固定提交号。`fetch-only` 会更新并推送 `main` 但**不会**把上游合并进 `release`，是否需要合并由人决定。
