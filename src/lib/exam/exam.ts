@@ -5,8 +5,9 @@ import type { DifficultyLevel } from "@/lib/ai/types";
 import { createLogger } from "@/lib/logger";
 import { getMasteryThreshold } from "@/lib/mastery";
 import { DEFAULT_MASTERY_THRESHOLD, masteryStatusWhere } from "@/lib/mastery-status";
-import { startBackgroundTask, trackBackgroundTask } from "@/lib/background-tasks";
+import { runReservedTask, startBackgroundTask } from "@/lib/background-tasks";
 import { resolveNotebookScope, SUBJECT_DISPLAY_NAMES } from "@/lib/notebook-scope";
+import { QUESTION_TYPES } from "@/lib/question/question-type";
 import type { BackgroundTaskHandle } from "@/lib/background-tasks";
 
 const logger = createLogger('exam');
@@ -30,11 +31,17 @@ export interface ExamSelection {
     subjectIds: string[];
     tagNames?: string[];
     paperLevelIds?: string[];
+    /** 题型多选过滤：标准题型 key，"none" 表示未设置题型；缺省/空数组不限制 */
+    questionTypes?: string[];
     scope: ExamScope;
     count: number;
     pickRule?: ExamPickRule;
     /** 原题直出模式要求题目必须有题干文字 */
     requireQuestionText?: boolean;
+    /** 选题来源 key，缺省为默认错题本来源（见 exam-sources.ts 的 DEFAULT_EXAM_SOURCE） */
+    source?: string;
+    /** 排除已选的原题 ID（A/B 卷平行组卷时避免两卷题目重复） */
+    excludeIds?: string[];
 }
 
 /** 构造抽题条件：限定错题本、掌握范围（按用户的已掌握阈值），可选按知识点标签和卷别分组 */
@@ -55,6 +62,25 @@ export function buildSourceWhere(userId: string, selection: ExamSelection, maste
     }
     if (selection.paperLevelIds && selection.paperLevelIds.length > 0) {
         where.paperLevel = { in: selection.paperLevelIds };
+    }
+    // 题型多选：选 "none" 时包含未设置题型的题，与其他已选题型取 OR；未知题型 key 忽略
+    if (selection.questionTypes && selection.questionTypes.length > 0) {
+        const typeConditions: Prisma.ErrorItemWhereInput[] = [];
+        const concreteTypes = selection.questionTypes.filter(
+            (value) => value !== 'none' && (QUESTION_TYPES as readonly string[]).includes(value)
+        );
+        if (concreteTypes.length > 0) {
+            typeConditions.push({ questionType: { in: concreteTypes } });
+        }
+        if (selection.questionTypes.includes('none')) {
+            typeConditions.push({ questionType: null });
+        }
+        if (typeConditions.length > 0) {
+            const existingAnd = where.AND;
+            const andArray: Prisma.ErrorItemWhereInput[] = Array.isArray(existingAnd) ? [...existingAnd] : existingAnd ? [existingAnd] : [];
+            andArray.push({ OR: typeConditions });
+            where.AND = andArray;
+        }
     }
     // 原题直出模式要求有题干；纯空白无法用 where 判断，在 selectSourceItems 中再过滤
     if (selection.requireQuestionText) {
@@ -88,10 +114,14 @@ export function pickLeastPracticed<T extends { practiceCount: number; inExam?: b
 
 /** 按抽题规则选取原题，练习次数为该题的全部举一反三记录数，同次数优先选未出现在已有试卷中的题 */
 export async function selectSourceItems(userId: string, selection: ExamSelection) {
+    const where = buildSourceWhere(userId, selection, await getMasteryThreshold(userId));
+    if (selection.excludeIds && selection.excludeIds.length > 0) {
+        where.id = { notIn: selection.excludeIds };
+    }
     const candidates = await prisma.errorItem.findMany({
-        where: buildSourceWhere(userId, selection, await getMasteryThreshold(userId)),
-        // 只有原题直出需要判断题干，其他模式不读取题干全文
-        select: { id: true, shortId: true, questionText: selection.requireQuestionText === true, _count: { select: { practiceRecords: true, examQuestions: true } } },
+        where,
+        // 只有原题直出需要判断题干，其他模式不读取题干全文；题型用于创建试卷题目时快照；难度星级用于 A/B 卷均衡分配
+        select: { id: true, shortId: true, questionType: true, difficultyStars: true, questionText: selection.requireQuestionText === true, _count: { select: { practiceRecords: true, examQuestions: true } } },
     });
     let items = candidates.map(({ _count, ...item }) => ({
         ...item,
@@ -172,10 +202,16 @@ const runningPapers = new Set<string>();
 
 /**
  * 生成试卷中尚未成功的题目（新建试卷、重试失败题目、服务重启后续生成均调用此函数）
- * 原题直出（mode=original）的试卷不需要 AI 生成，直接跳过
+ * 原题直出（mode=original）的试卷不需要 AI 生成，直接跳过。
+ *
+ * taskHandle 为路由层用 reserveBackgroundTask 预占的句柄（按 target 防重复），
+ * 仅在 /api/exams/:id/retry 路由传入；内部用它登记后台任务进度并自动 succeed/fail。
  */
-export async function generateExamPaper(paperId: string, language: 'zh' | 'en' = 'zh'): Promise<void> {
-    if (runningPapers.has(paperId)) return;
+export async function generateExamPaper(paperId: string, language: 'zh' | 'en' = 'zh', taskHandle?: BackgroundTaskHandle): Promise<void> {
+    if (runningPapers.has(paperId)) {
+        taskHandle?.cancel();
+        return;
+    }
     runningPapers.add(paperId);
     let task: BackgroundTaskHandle | null = null;
     try {
@@ -183,14 +219,25 @@ export async function generateExamPaper(paperId: string, language: 'zh' | 'en' =
             where: { id: paperId },
             select: { userId: true, title: true, difficulty: true, mode: true, questions: { where: { status: { not: 'ready' } }, select: { id: true } } },
         });
-        if (!paper) return;
+        if (!paper) {
+            taskHandle?.cancel();
+            return;
+        }
         // 原题直出：题目创建时即为 ready，无需 AI 生成
-        if (paper.mode === 'original') return;
+        if (paper.mode === 'original') {
+            taskHandle?.cancel();
+            return;
+        }
 
         const queue = paper.questions.map((question) => question.id);
         const total = queue.length;
         let done = 0;
-        if (total > 0) task = startBackgroundTask({ userId: paper.userId, kind: 'exam', subject: paper.title, link: `/exams/${paperId}`, total });
+        if (taskHandle) {
+            task = taskHandle;
+            if (total > 0) task.setProgress(0, total);
+        } else if (total > 0) {
+            task = startBackgroundTask({ userId: paper.userId, kind: 'exam', subject: paper.title, link: `/exams/${paperId}`, total });
+        }
         if (queue.length > 0) {
             await prisma.examQuestion.updateMany({ where: { id: { in: queue } }, data: { status: 'pending', error: null } });
             await prisma.examPaper.update({ where: { id: paperId }, data: { status: 'generating' } });
@@ -241,13 +288,17 @@ const REGENERATED_SELECT = { status: true, questionText: true, answerText: true,
  * 单独重新生成试卷中的一道题。AI 失败时保留原内容并抛出错误。
  * - question：生成新的举一反三题目及解答，已录入结果的题目不允许（HAS_RESULTS）
  * - answer：保留题目，只重新生成答案和解析，并同步该题已录入记录中的解答快照
+ *
+ * taskHandle 为路由层用 reserveBackgroundTask 预占的句柄（按 target 防重复），
+ * 路由校验通过后才传入；内部用它包装 AI 调用并自动 succeed/fail。
  */
 export async function regenerateExamQuestion(
     paperId: string,
     questionId: string,
     userId: string,
     mode: ExamRegenerateMode,
-    language: 'zh' | 'en' = 'zh'
+    language: 'zh' | 'en' = 'zh',
+    taskHandle?: BackgroundTaskHandle,
 ): Promise<RegeneratedExamQuestion> {
     const question = await prisma.examQuestion.findUnique({
         where: { id: questionId },
@@ -270,21 +321,36 @@ export async function regenerateExamQuestion(
         },
     });
     if (!question || question.paperId !== paperId || question.paper.userId !== userId) {
+        taskHandle?.cancel();
         throw new Error('EXAM_QUESTION_NOT_FOUND');
     }
     if (question.status === 'pending') {
+        taskHandle?.cancel();
         throw new Error('QUESTION_GENERATING');
     }
-    const task = { userId, subject: question.paper.title, link: `/exams/${paperId}` };
+    // 预占句柄由路由层传入；未传入时（如测试直接调用）回退到普通登记
+    const wrap = <T>(kind: Parameters<typeof startBackgroundTask>[0]['kind'], operation: () => Promise<T>): Promise<T> => {
+        const task = taskHandle ?? startBackgroundTask({ userId, subject: question.paper.title, link: `/exams/${paperId}`, kind });
+        return runReservedTask(task, operation);
+    };
 
     if (mode === 'question') {
         // 原题直出模式不允许换一道题
-        if (question.paper.mode === 'original') throw new Error('ORIGINAL_MODE');
-        if (question._count.practiceRecords > 0) throw new Error('HAS_RESULTS');
+        if (question.paper.mode === 'original') {
+            taskHandle?.cancel();
+            throw new Error('ORIGINAL_MODE');
+        }
+        if (question._count.practiceRecords > 0) {
+            taskHandle?.cancel();
+            throw new Error('HAS_RESULTS');
+        }
         const source = question.errorItem;
-        if (!source) throw new Error('SOURCE_DELETED');
+        if (!source) {
+            taskHandle?.cancel();
+            throw new Error('SOURCE_DELETED');
+        }
 
-        const generated = await trackBackgroundTask({ ...task, kind: 'exam' }, () => getAIService().generateSimilarQuestion(
+        const generated = await wrap('exam', () => getAIService().generateSimilarQuestion(
             source.questionText || '',
             parseTagNames(source),
             language,
@@ -308,11 +374,14 @@ export async function regenerateExamQuestion(
         await refreshPaperStatus(paperId);
     } else {
         const questionText = question.questionText;
-        if (question.status !== 'ready' || !questionText?.trim()) throw new Error('NO_QUESTION_TEXT');
+        if (question.status !== 'ready' || !questionText?.trim()) {
+            taskHandle?.cancel();
+            throw new Error('NO_QUESTION_TEXT');
+        }
         const scope = question.errorItem?.subject ? resolveNotebookScope(question.errorItem.subject) : null;
         const subject = scope?.subject ? SUBJECT_DISPLAY_NAMES[scope.subject] : null;
 
-        const result = await trackBackgroundTask({ ...task, kind: 'reanswer' }, () => getAIService().reanswerQuestion(
+        const result = await wrap('reanswer', () => getAIService().reanswerQuestion(
             questionText, language, subject, undefined, question.errorItem?.gradeSemester
         ));
         if (!result.answerText.trim() && !result.analysis.trim()) throw new Error('EMPTY_ANSWER');
@@ -416,6 +485,7 @@ export function snapshotOriginalQuestion(item: {
     figureScale: number;
     figureAlign: string;
     answerSpacePx: number | null;
+    questionType: string | null;
 }) {
     return {
         questionText: item.questionText,
@@ -425,6 +495,98 @@ export function snapshotOriginalQuestion(item: {
         figureScale: item.figureScale,
         figureAlign: item.figureAlign,
         answerSpacePx: item.answerSpacePx,
+        questionType: item.questionType,
         status: 'ready' as const,
     };
+}
+
+/** 原题直出模式需要查询的快照字段（按抽题顺序重排后用于建题） */
+const ORIGINAL_SNAPSHOT_SELECT = {
+    id: true,
+    shortId: true,
+    questionText: true,
+    answerText: true,
+    analysis: true,
+    figureSvg: true,
+    figureScale: true,
+    figureAlign: true,
+    answerSpacePx: true,
+    questionType: true,
+} as const;
+
+export interface CreateExamPaperFromSourcesArgs {
+    userId: string;
+    mode: ExamMode;
+    title: string;
+    scope: ExamScope;
+    difficulty: string;
+    requestedCount: number;
+    subjectIdsJson: string;
+    tagNamesJson: string | null;
+    /** 选出的源题（original 模式要求题干非空已在选题时过滤） */
+    sources: { id: string; shortId: string | null; questionType: string | null }[];
+    language?: 'zh' | 'en';
+    /** 后台触发的生成函数；测试可注入避免副作用。缺省 generateExamPaper */
+    startGeneration?: (paperId: string, language: 'zh' | 'en') => void;
+    /** 日志标签（缺省 'Exam paper created'） */
+    logLabel?: string;
+}
+
+/**
+ * 按选出的源题创建一份试卷：
+ * - original 模式：查询原题快照并按抽题顺序建题，试卷立即可用；
+ * - generate 模式：建待生成题目并通过 startGeneration 触发后台生成。
+ * 返回创建结果（id/title/requestedCount/题目数），由调用方组装响应。
+ */
+export async function createExamPaperFromSources(args: CreateExamPaperFromSourcesArgs) {
+    const { userId, mode, title, scope, difficulty, requestedCount, subjectIdsJson, tagNamesJson, sources, language } = args;
+    let questionsCreate;
+    let status: string | undefined;
+    let difficultyValue: string = difficulty;
+    if (mode === 'original') {
+        // 原题直出：不消耗 AI 额度，直接复制原题快照
+        const items = await prisma.errorItem.findMany({
+            where: { id: { in: sources.map((s) => s.id) } },
+            select: ORIGINAL_SNAPSHOT_SELECT,
+        });
+        // 按抽题顺序（sources）重排，保持 least_practiced / random 的优先级
+        const itemMap = new Map(items.map((item) => [item.id, item]));
+        const orderedItems = sources.map((s) => itemMap.get(s.id)!).filter(Boolean);
+        questionsCreate = orderedItems.map((item, index) => ({
+            order: index + 1,
+            errorItemId: item.id,
+            sourceShortId: item.shortId!,
+            ...snapshotOriginalQuestion(item),
+        }));
+        status = 'ready';
+        difficultyValue = 'original';
+    } else {
+        questionsCreate = sources.map((source, index) => ({
+            order: index + 1,
+            errorItemId: source.id,
+            sourceShortId: source.shortId!,
+            questionType: source.questionType,
+        }));
+    }
+    const paper = await prisma.examPaper.create({
+        data: {
+            userId,
+            title,
+            status,
+            scope,
+            difficulty: difficultyValue,
+            mode,
+            requestedCount,
+            subjectIds: subjectIdsJson,
+            tagNames: tagNamesJson,
+            questions: { create: questionsCreate },
+        },
+        select: { id: true, title: true, requestedCount: true, _count: { select: { questions: true } } },
+    });
+    if (mode === 'generate') {
+        const start = args.startGeneration ?? ((paperId: string, lang: 'zh' | 'en') => { void generateExamPaper(paperId, lang); });
+        start(paper.id, language || 'zh');
+    }
+    logger.info({ paperId: paper.id, count: sources.length, requested: requestedCount, mode }, args.logLabel ?? 'Exam paper created');
+    return paper;
 }

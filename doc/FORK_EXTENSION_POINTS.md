@@ -17,6 +17,53 @@ fork 项目可在此文件中：
 
 纯函数 `isBarePath(pathname)` 与 `findActiveNavKey(pathname)` 已导出供测试和外部使用。
 
+## 界面文案
+
+文件：`src/lib/i18n/overrides.ts`
+
+fork 项目可覆盖上游已存在的文案 key，或维护自己的新文案，而不改动上千行的 `src/lib/i18n/zh.ts` / `en.ts` 主文件。
+
+### 覆盖已有文案
+
+`TRANSLATION_OVERRIDES` 的类型是 `{ zh?: DeepPartial<Translations>; en?: DeepPartial<Translations> }`，只允许覆盖已存在的 key——拼错 key 会在编译期报错。上游此对象为空，fork 在自己模块中维护覆盖内容：
+
+```ts
+// src/lib/i18n/bank-zh.ts（fork 自建文件）
+import type { DeepPartial } from "@/lib/i18n/overrides";
+import type { Translations } from "@/lib/translations";
+
+export const bankZh: DeepPartial<Translations> = {
+    pageTitle: {
+        base: "AI题库",
+        home: "录入题目",
+    },
+};
+```
+
+```ts
+// src/lib/i18n/overrides.ts 中赋值（fork 私有改动）
+import { bankZh } from "@/lib/i18n/bank-zh";
+export const TRANSLATION_OVERRIDES = { zh: bankZh };
+```
+
+合并规则：仅普通对象递归深合并；数组与函数整体替换；`translations.en` / `translations.zh` 在未覆盖时与 `en` / `zh` 原对象严格一致。
+
+### fork 自有文案
+
+上游不为 fork 预留新 key。fork 的自有页面文案应放在自己的模块（如 `src/lib/i18n/bank-zh.ts`）中，并通过自己的 hook 结合 `useLanguage()` 读取当前语言：
+
+```ts
+// src/lib/hooks/use-bank-translations.ts（fork 自建文件）
+import { useLanguage } from "@/contexts/LanguageContext";
+import { bankZh } from "@/lib/i18n/bank-zh";
+import { bankEn } from "@/lib/i18n/bank-en";
+
+export function useBankTranslations() {
+    const { language } = useLanguage();
+    return language === "zh" ? bankZh : bankEn;
+}
+```
+
 ## 备份扩展数据
 
 文件：`src/lib/backup-extensions.ts`
@@ -65,3 +112,66 @@ BACKUP_EXTENSIONS.push(bankMeta);
 | `tagIdMap` | 自定义标签 ID 映射 |
 | `examPaperIdMap` | 试卷 ID 映射 |
 | `examQuestionIdMap` | 试卷题目 ID 映射 |
+
+## 组卷选题来源
+
+文件：`src/lib/exam/exam-sources.ts`
+
+「举一反三」与「原题直出」两种模式的选题逻辑可插拔：上游默认注册 `error-items`（从错题本按掌握情况与抽题规则选题），fork 项目可注册自己的 provider（如按知识点×题型×难度配比从 AI 题库选题），复用后续的出题、打印、成绩记录流程。
+
+```ts
+import type { ExamSourceProvider } from "@/lib/exam/exam-sources";
+import { registerExamSourceProvider } from "@/lib/exam/exam-sources";
+
+const bankProvider: ExamSourceProvider = {
+    key: "question-bank",
+    select: async (userId, selection) => {
+        // 按 fork 项目的规则选题，返回与默认实现相同结构的原题列表
+        // 每项需包含 { id, shortId, questionText?, practiceCount, inExam }
+        return [];
+    },
+};
+
+registerExamSourceProvider(bankProvider);
+```
+
+调用方在创建试卷时通过 `source` 字段指定来源：
+
+```ts
+// POST /api/exams
+{ "subjectIds": ["..."], "scope": "unmastered", "count": 10, "difficulty": "hard", "source": "question-bank" }
+```
+
+- `source` 缺省为 `error-items`（错题本来源），未注册的 source 返回 `VALIDATION_ERROR`（`code: invalid_source`）。
+- `source` 目前不持久化到试卷：重试失败题目时不重新选题，只重新生成已有题目的答案，因此不影响现有流程；如需在后续流程（如打印、成绩分析）中感知来源，fork 项目需自行扩展。
+
+## 题目保存钩子
+
+文件：`src/lib/question/question-save-hooks.ts`
+
+fork 项目可在题目入库时同步写自己的数据（如题库索引、自定义关联表），只需注册钩子，无需改动 `question-save.ts`：
+
+```ts
+import type { QuestionSaveHook } from "@/lib/question/question-save-hooks";
+import { registerQuestionSaveHook } from "@/lib/question/question-save-hooks";
+
+const myHook: QuestionSaveHook = async (tx, event) => {
+    // event: { userId, errorItemId, duplicate, origin, input }
+    await tx.myTable.create({ data: { errorItemId: event.errorItemId } });
+};
+
+registerQuestionSaveHook(myHook);
+```
+
+事务语义：
+
+- 钩子在错题写入的**同一数据库事务**内执行，位于 `options.afterWrite` 之后。
+- 任何钩子抛错都会使整笔事务回滚（与 `afterWrite` 一致），并记录 `logger.error`。
+- 重复题（`duplicate: true`）同样触发钩子，此时 `errorItemId` 指向原有题目，未新建错题。
+
+`origin` 字段区分入库路径：`manual`（单题保存 API）、`import-task`（识别导入任务）、`openclaw`（Openclaw 批量上传）。
+
+注意：
+
+- 钩子在事务内运行，执行时间直接拉长事务持有时间；**不要在钩子里调用外部网络或执行耗时计算**，只做同库的数据写入。
+- 进程内按注册顺序依次执行；`clearQuestionSaveHooksForTest` 仅供测试清空注册表。

@@ -21,7 +21,7 @@ import type { ImportTask, Prisma, User } from "@prisma/client";
 import { z } from "zod";
 import { ParsedQuestionSchema } from "@/lib/ai/schema";
 import type { ParsedQuestion } from "@/lib/ai";
-import { consumeAiQuota } from "@/lib/ai-quota";
+import { consumeAiQuota, quotaRejectionCode } from "@/lib/ai-quota";
 import { createErrorResponse, ErrorCode, notFound, validationError } from "@/lib/api-errors";
 import { describeQuestion } from "@/lib/background-tasks";
 import { getErrorMessage } from "@/lib/error-message";
@@ -38,6 +38,7 @@ import { importSchema, saveQuestion } from "@/lib/question/question-save";
 import type { SaveQuestionResult } from "@/lib/question/question-save";
 import { questionSaveFailureToResponse } from "@/lib/question/question-save-response";
 import type { QuestionSaveFailure } from "@/lib/question/question-save-failure";
+import { suggestTagsForText } from "@/lib/tags/retag";
 
 const logger = createLogger('import-tasks');
 
@@ -282,6 +283,7 @@ async function saveTask(task: ImportTask, user: User, input: unknown): Promise<S
     const parsed = importSchema.safeParse(input);
     const result: SaveQuestionResult = parsed.success
         ? await saveQuestion(user, parsed.data, {
+            origin: 'import-task',
             // 与错题写入同一事务：任务已不在保存中（被丢弃或判为中断）时整笔回滚，不留下未关联的错题
             afterWrite: async (tx, saved) => {
                 const linked = await tx.importTask.updateMany({
@@ -340,13 +342,33 @@ async function touchBatch(batchId: string | null): Promise<void> {
         .catch((error: unknown) => logger.warn({ batchId, error: getErrorMessage(error) }, 'Failed to mark import batch unread'));
 }
 
-/** 识别一项任务：文字任务解析题目原文，图片任务识别图片 */
+/** data:image 前缀，用于判断任务是否带有可作为识别输入的原图（区别于仅保存的原始截图） */
+const IMAGE_DATA_URL_PREFIX = 'data:image/';
+
+/** 任务是否带有有效原图：可作为识别输入的图片，而非仅作附件保存的内容 */
+export function hasAnalyzableImage(task: Pick<ImportTask, 'imageData'>): boolean {
+    return task.imageData.startsWith(IMAGE_DATA_URL_PREFIX);
+}
+
+/** 识别一项任务：有原图时按图片识别（文字层仅作参考），否则解析题目原文 */
 function analyzeTask(task: ImportTask & { user: User }): Promise<ParsedQuestion> {
     const link = task.batchId ? `/import-batches/${task.batchId}` : `/import-tasks/${task.id}`;
     const language = task.language === 'en' ? 'en' : 'zh';
+    if (hasAnalyzableImage(task)) {
+        return analyzeQuestionForUser({
+            email: task.user.email,
+            userId: task.user.id,
+            imageBase64: task.imageData,
+            language,
+            subjectId: task.subjectId,
+            link,
+            referenceText: task.inputText || null,
+        });
+    }
     if (task.inputText) {
         return analyzeQuestionTextForUser({ userId: task.user.id, questionText: task.inputText, language, subjectId: task.subjectId, link });
     }
+    // 无文字且无原图时按图片路径走，由 AI 服务报错（与旧行为一致）
     return analyzeQuestionForUser({
         email: task.user.email,
         userId: task.user.id,
@@ -357,8 +379,48 @@ function analyzeTask(task: ImportTask & { user: User }): Promise<ParsedQuestion>
     });
 }
 
-/** 任务消耗的额度类别：文字题与文字解题一致，图片与拍照识别一致 */
-export function quotaKindOf(task: Pick<ImportTask, 'inputText'>): 'reanswer' | 'analyze' {
+/**
+ * 「只补标签」路径：任务已有合法结果（draftItemToParsed），仅调用 AI 补全缺失的知识点、难度星级与题型。
+ * 已有值的字段一律保留；AI 失败或超额时不阻断入库，按原结果继续。
+ */
+async function fillMissingTags(task: ImportTask & { user: User }, result: ParsedQuestion): Promise<ParsedQuestion> {
+    const needsTags = (result.knowledgePoints?.length ?? 0) === 0;
+    const needsDifficulty = result.difficultyStars == null;
+    const needsType = !result.questionType;
+    if (!needsTags && !needsDifficulty && !needsType) return result;
+
+    // 目标错题本决定候选知识点范围
+    const targetSubjectId = task.targetSubjectId ?? task.subjectId;
+    const notebook = targetSubjectId
+        ? await prisma.subject.findFirst({ where: { id: targetSubjectId, userId: task.user.id }, select: { stage: true, subjectKey: true, tagSet: true, name: true } })
+        : null;
+
+    try {
+        const suggestion = await suggestTagsForText({
+            questionText: result.questionText,
+            answerText: result.answerText,
+            analysis: result.analysis,
+            wrongAnswerText: result.wrongAnswerText || null,
+            mistakeAnalysis: result.mistakeAnalysis || null,
+            notebook,
+            user: task.user,
+            gradeSemester: result.gradeSemester ?? null,
+        });
+        return {
+            ...result,
+            knowledgePoints: needsTags ? suggestion.tags : result.knowledgePoints,
+            difficultyStars: needsDifficulty ? suggestion.difficultyStars : result.difficultyStars,
+            questionType: needsType ? suggestion.questionType : result.questionType,
+        };
+    } catch (error) {
+        logger.warn({ taskId: task.id, error: getErrorMessage(error) }, 'Tag suggestion failed for import task; keeping original result');
+        return result;
+    }
+}
+
+/** 任务消耗的额度类别：与原图识别路径一致——有原图按 analyze 计，纯文字按 reanswer 计 */
+export function quotaKindOf(task: Pick<ImportTask, 'inputText' | 'imageData'>): 'reanswer' | 'analyze' {
+    if (hasAnalyzableImage(task)) return 'analyze';
     return task.inputText ? 'reanswer' : 'analyze';
 }
 
@@ -386,9 +448,13 @@ async function executeTask(id: string): Promise<void> {
 
         if (task.status === 'analyzing') {
             const started = Date.now();
+            // 「只补标签」：任务已有合法结果时不再完整识别，仅调用 AI 补全缺失字段
+            const existingResult = parseResult(task.result);
             let result: ParsedQuestion;
             try {
-                result = await analyzeTask(task);
+                result = existingResult
+                    ? await fillMissingTags(task, existingResult)
+                    : await analyzeTask(task);
             } catch (error) {
                 const message = getErrorMessage(error);
                 logger.error({ taskId: id, error: message, analyzeMs: Date.now() - started }, 'Import task analysis failed');
@@ -409,7 +475,7 @@ async function executeTask(id: string): Promise<void> {
                     ...(next === 'review' ? { finishedAt: new Date(), readAt: null } : {}),
                 },
             }));
-            logger.info({ taskId: id, analyzeMs, next }, 'Import task analyzed');
+            logger.info({ taskId: id, analyzeMs, next, tagsOnly: !!existingResult }, 'Import task analyzed');
             // 识别期间任务被丢弃
             if (updated.count === 0 || next === 'review') return;
             task = await prisma.importTask.findUnique({ where: { id }, include: { user: true } });
@@ -492,7 +558,7 @@ export async function createImportTask(user: User, raw: unknown, measured: { rec
     const limited = await serializeWrite(() => consumeAiQuota(user, 'analyze'));
     if (limited) {
         release();
-        await markFailed(id, 'analyzing', 'AI_DAILY_LIMIT_EXCEEDED');
+        await markFailed(id, 'analyzing', await quotaRejectionCode(limited));
         return { response: limited };
     }
 
@@ -643,7 +709,7 @@ export async function retryImportTask(user: User, id: string): Promise<NextRespo
             const limited = await serializeWrite(() => consumeAiQuota(user, quotaKindOf(task)));
             if (limited) {
                 release();
-                await markFailed(id, 'analyzing', 'AI_DAILY_LIMIT_EXCEEDED');
+                await markFailed(id, 'analyzing', await quotaRejectionCode(limited));
                 return limited;
             }
         }

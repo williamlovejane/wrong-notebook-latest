@@ -509,7 +509,7 @@ describe('Azure OpenAI Provider 知识点重新标注', () => {
 
         const tags = await provider.suggestKnowledgeTags({ questionText: '题目', subject: '数学', allowedTags: ['相遇问题'] });
 
-        expect(tags).toEqual({ tags: ['相遇问题'], difficultyStars: null });
+        expect(tags).toEqual({ tags: ['相遇问题'], difficultyStars: null, questionType: null });
     });
 });
 
@@ -614,7 +614,7 @@ describe('请求材料边界与标签约束回归', () => {
         expect(result.knowledgePoints).toEqual(['加法']);
         const request = mockAzureCompletionCreate.mock.calls.at(-1)?.[0];
         expect(request.messages[0].content).not.toContain(question);
-        expect(request.messages[0].content).toContain('9 个 XML 标签');
+        expect(request.messages[0].content).toContain('10 个 XML 标签');
         expect(JSON.parse(request.messages[1].content).data.questionText).toBe(question);
         expect(JSON.parse(request.messages[1].content).data.tagOptions.candidateTags).toEqual(candidates);
         const empty = await provider.reanswerQuestion(question, 'zh', '数学', undefined, null, { subjectName: '数学', tags: [] });

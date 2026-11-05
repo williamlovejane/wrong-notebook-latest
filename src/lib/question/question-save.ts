@@ -16,6 +16,10 @@ import { normalizeMistakeStatusForSave } from "@/lib/question/mistake-status";
 import { generateUniqueShortId } from "@/lib/short-id/short-id";
 import { resolveNotebookForSubject } from "@/lib/notebook-resolver";
 import { scheduleMasteryEvaluation } from "@/lib/mastery";
+import type { QuestionSaveOrigin } from "@/lib/question/question-save-hooks";
+import { QUESTION_SAVE_HOOKS } from "@/lib/question/question-save-hooks";
+import { getErrorMessage } from "@/lib/error-message";
+import { normalizeQuestionType } from "@/lib/question/question-type";
 import { findDuplicateQuestion, recordDuplicateQuestion, runQuestionImportTransaction } from "@/lib/question/question-deduplication";
 import { MAX_FIGURE_SVG_LENGTH, sanitizeFigureSvg } from "@/lib/figure-svg";
 import { getDefaultPaperLevelGroupId, ensureDefaultPaperGroups } from "@/lib/paper-level";
@@ -46,6 +50,8 @@ export const importSchema = z.object({
     figureScale: z.number().int().min(MIN_FIGURE_SCALE).max(MAX_FIGURE_SCALE).default(DEFAULT_FIGURE_SCALE),
     figureAlign: z.enum(FIGURE_ALIGNS).default(DEFAULT_FIGURE_ALIGN),
     geogebraCommands: z.string().nullish(),
+    // 宽松接受：无法识别的题型在保存时规范化为 null，不因此拒绝整题
+    questionType: z.string().max(200).nullish(),
 });
 
 export type ImportQuestionInput = z.infer<typeof importSchema>;
@@ -55,6 +61,8 @@ export interface SaveQuestionOptions {
     afterWrite?: (tx: Prisma.TransactionClient, saved: { id: string; duplicate: boolean }) => Promise<void>;
     /** 追加到 ErrorItem 创建数据中的额外字段（如 ocrText、errorType、source），与默认字段不冲突时使用 */
     extraErrorItemData?: Partial<Prisma.ErrorItemUncheckedCreateInput>;
+    /** 题目入库的来源路径，缺省 'manual'；全局钩子按此区分来源（见 question-save-hooks.ts） */
+    origin?: QuestionSaveOrigin;
 }
 
 /** 新题写入结果（ErrorItem 记录及其标签、错题本） */
@@ -112,6 +120,8 @@ async function saveQuestionInner(user: User, body: ImportQuestionInput, options:
         difficultyStars,
         geogebraCommands,
     } = body;
+    // 题型规范化：无法识别时存 null
+    const questionType = normalizeQuestionType(body.questionType);
     // 配图 SVG 入库前再净化一次，无效时丢弃
     const figureSvg = sanitizeFigureSvg(body.figureSvg);
     const hasFigure = !!body.hasFigure || figureSvg !== null;
@@ -203,6 +213,7 @@ async function saveQuestionInner(user: User, body: ImportQuestionInput, options:
                     figureScale: body.figureScale,
                     figureAlign: body.figureAlign,
                     geogebraCommands: geogebraCommands || null,
+                    questionType,
                     masteryLevel: 0,
                     ...options.extraErrorItemData,
                     tags: {
@@ -229,8 +240,24 @@ async function saveQuestionInner(user: User, body: ImportQuestionInput, options:
     };
     const result = await runQuestionImportTransaction(async (tx) => {
         const written = await write(tx);
+        const duplicate = 'duplicate' in written && written.duplicate === true;
         // 与错题写入同一事务提交：调用方的关联记录（如识别任务标记已保存）失败时整笔回滚
-        await options.afterWrite?.(tx, { id: written.id, duplicate: 'duplicate' in written && written.duplicate === true });
+        await options.afterWrite?.(tx, { id: written.id, duplicate });
+        // 全局钩子（fork 扩展点）在 afterWrite 之后、同一事务内依次执行；抛错时整笔回滚
+        for (const hook of QUESTION_SAVE_HOOKS) {
+            try {
+                await hook(tx, { userId: user.id, errorItemId: written.id, duplicate, origin: options.origin ?? 'manual', input: body });
+            } catch (hookError) {
+                logger.error({
+                    error: hookError,
+                    errorMessage: getErrorMessage(hookError),
+                    errorItemId: written.id,
+                    userId: user.id,
+                    origin: options.origin ?? 'manual',
+                }, 'Question save hook failed');
+                throw hookError;
+            }
+        }
         return written;
     });
     const duplicate = 'duplicate' in result && result.duplicate === true;

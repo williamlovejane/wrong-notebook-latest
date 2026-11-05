@@ -39,8 +39,13 @@ interface CorrectionEditorProps {
 export function CorrectionEditor({ initialData, onSave, onCancel, imagePreview, initialSubjectId, aiTimeout }: CorrectionEditorProps) {
     const { timeZone } = useTimeZone();
     const { t, language } = useLanguage();
+    // 「按原样入库」路径用占位空格通过 ParsedQuestionSchema 的 min(1) 校验，此处还原为空串，
+    // 与手工录入留空时的编辑体验一致
+    const blankToEmpty = (text: string) => (text.trim() ? text : "");
     const [data, setData] = useState<CorrectionDraft>({
         ...initialData,
+        answerText: blankToEmpty(initialData.answerText),
+        analysis: blankToEmpty(initialData.analysis),
         wrongAnswerText: initialData.wrongAnswerText || "",
         mistakeAnalysis: initialData.mistakeAnalysis || "",
         mistakeStatus: initialData.mistakeStatus || "unknown",
@@ -115,6 +120,8 @@ export function CorrectionEditor({ initialData, onSave, onCancel, imagePreview, 
                 mistakeStatus: normalizeMistakeStatusForSave(result.mistakeStatus, result.wrongAnswerText),
                 // 重新解题给出星级时更新，否则保留原星级
                 difficultyStars: result.difficultyStars ?? prev.difficultyStars,
+                // 重新解题给出题型时更新，否则保留原题型
+                questionType: result.questionType ?? prev.questionType,
             }));
             toast.success(t.editor.reanswerSuccess || '✅ Answer and analysis updated!');
         } catch (error) {

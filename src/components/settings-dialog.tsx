@@ -21,6 +21,8 @@ import { AccountSettings } from "@/components/settings/account-settings";
 import { AiProviderSettings } from "@/components/settings/ai-provider-settings";
 import { CnmTagImportSettings } from "@/components/settings/cnm-tag-import-settings";
 import { DangerZoneSettings } from "@/components/settings/danger-zone-settings";
+import { DeleteAccountSettings } from "@/components/settings/delete-account-settings";
+import { AiConsentSetting } from "@/components/settings/ai-consent-setting";
 import { DataBackupSettings } from "@/components/settings/data-backup-settings";
 import { DebugLogSettings } from "@/components/settings/debug-log-settings";
 import { GeneralSettings } from "@/components/settings/general-settings";
@@ -55,6 +57,7 @@ export function SettingsDialog() {
     const { setTimeZone } = useTimeZone();
     const { data: session } = useSession();
     const isAdmin = session?.user?.role === 'admin';
+    const userId = session?.user?.id ?? '';
     const { t } = useLanguage();
     const router = useRouter();
     const [open, setOpen] = useState(false);
@@ -150,6 +153,7 @@ export function SettingsDialog() {
 
                     <TabsContent value="account" className="space-y-4 py-4">
                         <AccountSettings />
+                        <AiConsentSetting />
                     </TabsContent>
 
                     <TabsContent value="ai" className="space-y-4 py-4">
@@ -199,8 +203,9 @@ export function SettingsDialog() {
 
                     <TabsContent value="danger" className="space-y-4 py-4">
                         <div className="space-y-3">
-                            <DataBackupSettings isAdmin={isAdmin} />
+                            <DataBackupSettings isAdmin={isAdmin} userId={userId} />
                             <DangerZoneSettings isAdmin={isAdmin} />
+                            <DeleteAccountSettings isAdmin={isAdmin} />
                         </div>
                     </TabsContent>
 

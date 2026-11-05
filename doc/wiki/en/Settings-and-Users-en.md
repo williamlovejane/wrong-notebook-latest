@@ -43,6 +43,15 @@ ISO times ending in `Z` in the database and API still represent the same absolut
 
 See the [time zone notes](https://github.com/margrop/wrong-notebook/blob/main/doc/TIME_ZONE.md) for details.
 
+## AI data sharing
+
+AI features send the question text, images, answers, reference answers and explanations needed for the task to the third-party AI provider set by the administrator. After signing in for the first time, every account (admins included) sees an "AI data sharing" dialog listing the data sent, the current provider and the [privacy policy](https://wrong-notebook.margrop.net/en/privacy/). AI features work only after the user agrees:
+
+- "Not now" stops the dialog from opening by itself for the rest of the browsing session. Using any AI feature opens it again; after agreeing, repeat the action once.
+- Without consent the server rejects AI requests (error code `AI_CONSENT_REQUIRED`) and sends nothing to the provider; mastery is estimated by rules, and everything else keeps working.
+- Under **Settings → Account → AI data sharing** you can see when you agreed, and allow or withdraw. Withdrawing does not affect data already sent to the provider.
+- Consent is stored with the account and is not included in backup exports or imports. Accounts created before this version must agree once as well; an account used only through [Openclaw](Openclaw-Integration-en) must sign in on the web and agree first.
+
 ## Permissions and user management
 
 | Role | Main permissions |
@@ -51,6 +60,8 @@ See the [time zone notes](https://github.com/margrop/wrong-notebook/blob/main/do
 | Admin | Global AI and prompt settings, time zone, registration switch, user management and site-wide data import/export |
 
 Admins open the dashboard from "Settings → User Management" to see usage statistics and enable, disable or delete users. Confirm the target and [back up your data](Backup-and-Restore-en) before deleting.
+
+Regular users can delete their own account under "Settings → Danger → Delete Account" by entering their current password. The account and all of its data (questions, notebooks, tags, practice records, exam papers, etc.) are permanently deleted and the user is signed out; this cannot be undone, so export anything you want to keep first. Admin accounts cannot delete themselves, so the instance never loses its administrator; to clear data, use System Initialization on the same page.
 
 New sign-ups are off by default, so strangers cannot register and use up your AI quota when the service is reachable from the internet. To create accounts for family members, an admin turns on "Allow New Registrations" under "Settings → User Management" and turns it off again once the accounts exist. The environment variable `ALLOW_REGISTRATION=true` changes the default; a switch saved on the web page takes precedence. Instances that saved settings on the web page before upgrading keep their existing switch. While sign-ups are off, the sign-in page hides "Register now" and asks visitors to contact the administrator.
 

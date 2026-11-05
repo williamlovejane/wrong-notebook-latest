@@ -33,6 +33,7 @@ model User {
   enableGeogebra Boolean @default(false) // 是否显示 GeoGebra 动态演示
   enableSvgAnimation Boolean @default(true) // 是否显示 SVG 动画讲解
   themePreference String @default("system") // 界面主题：system 跟随系统、light 浅色、dark 深色
+  aiDataConsentAt DateTime? // 同意将题目等数据发送给第三方 AI 服务商的时间；为空表示尚未同意，AI 功能不可用
 
   errorItems ErrorItem[]
   subjects   Subject[]
@@ -139,6 +140,8 @@ model ErrorItem {
   mistakeAnalysis  String? // Analysis of why the wrong answer happened
   mistakeStatus    String? // not_attempted, wrong_attempt, unknown
   knowledgePoints  String? // [DEPRECATED] JSON string - kept for migration only
+  // 题型，取值来自 src/lib/question/question-type.ts 的 QUESTION_TYPES
+  questionType     String?
   geogebraCommands String? // GeoGebra commands for interactive demo (JSON or newline-separated)
   svgAnimation     String? // AI 生成的 SVG 动画讲解（已净化），中文版
   svgAnimationEn   String? // 英文版 SVG 动画讲解（已净化），界面为英文时使用
@@ -239,6 +242,8 @@ model ExamPaper {
   difficulty String   // easy | medium | hard | harder
   mode       String   @default("generate") // generate 举一反三新题 | original 原题直出
   requestedCount Int
+  // 是否按题型分大题显示与打印，默认关闭（兼容旧试卷）
+  groupByType Boolean @default(false)
   subjectIds String   // JSON 数组
   tagNames   String?  // JSON 数组
   resultsRecordedAt DateTime?
@@ -267,6 +272,9 @@ model ExamQuestion {
   figureScale   Int        @default(100) // 配图显示与打印比例，10~200%
   figureAlign   String     @default("center") // 配图显示与打印位置：left | center | right
   answerSpacePx Int?       // 打印时手动设置的题下留白高度（0~600 px），为空时按全局留白档位
+  score         Float?     // 每题分值（最多一位小数，0~1000），空表示未设分值
+  // 创建时从来源错题快照的题型；旧数据为 null，分组时回退读取关联错题当前题型
+  questionType  String?
   error         String?
   practiceRecordId String? // [DEPRECATED] 旧版一对一关联，部署校验要求保留已有列，改用 PracticeRecord.examQuestionId
   practiceRecords PracticeRecord[]

@@ -185,9 +185,9 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         expect(await database.knowledgeTag.count({ where: { name: '我的句式笔记' } })).toBe(1);
     });
 
-    it('导出文件使用第 8 版格式，包含 tagSet 字段、空的 extensions 与试卷 mode', async () => {
+    it('导出文件使用第 11 版格式，包含 tagSet 字段、空的 extensions 与试卷 mode', async () => {
         const backup = await exportBackup();
-        expect(backup.version).toBe(8);
+        expect(backup.version).toBe(11);
         expect(backup.extensions).toEqual({});
         expect(backup.paperGroups).toContainEqual(expect.objectContaining({ id: 'group-b', key: 'b', name: 'B卷' }));
         expect(backup.systemTags).toBeDefined();
@@ -254,6 +254,30 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         expect(item.figureSvg).toBe(figure);
     });
 
+    it('题型字段随备份往返，旧版文件没有该字段时导入为 null', async () => {
+        await database.errorItem.update({ where: { id: 'item-1' }, data: { questionType: 'fill_blank' } });
+        const backup = await exportBackup();
+        const backupItem = backup.errorItems.find((item: { id: string }) => item.id === 'item-1');
+        expect(backupItem.questionType).toBe('fill_blank');
+        expect(backup.errorItems.find((item: { id: string }) => item.id === 'item-2').questionType ?? null).toBeNull();
+
+        await clearUserData();
+        await importBackup(backup);
+        const restored = await database.errorItem.findFirstOrThrow({ where: { userId: 'user-1', shortId: 'AbC234' } });
+        expect(restored.questionType).toBe('fill_blank');
+
+        // 模拟旧版备份：去掉 questionType 字段
+        const legacyBackup = await exportBackup();
+        legacyBackup.version = 8;
+        for (const item of legacyBackup.errorItems) {
+            delete item.questionType;
+        }
+        await clearUserData();
+        await importBackup(legacyBackup);
+        const legacyItem = await database.errorItem.findFirstOrThrow({ where: { userId: 'user-1', shortId: 'AbC234' } });
+        expect(legacyItem.questionType).toBeNull();
+    });
+
     it.each([undefined, null, -1, 601, 50.5, '120'])('旧备份或非法单题留白 %s 导入为空，按全局留白档位', async (answerSpacePx) => {
         const backup = await exportBackup();
         expect(backup.errorItems.find((item: { id: string }) => item.id === 'item-1').answerSpacePx).toBe(240);
@@ -304,7 +328,7 @@ describe('数据导出后再导入（真实 SQLite）', () => {
                 subjectIds: JSON.stringify(['math']), tagNames: JSON.stringify(['自定义标签']), resultsRecordedAt: new Date('2026-10-22T00:00:00Z'),
                 createdAt: new Date('2026-10-21T00:00:00Z'),
                 questions: { create: [
-                    { id: 'question-1', order: 0, errorItemId: 'item-1', sourceShortId: 'AbC234', status: 'ready', questionText: '试卷新题', answerText: '答', analysis: '析', figureSvg: figure, figureScale: 75, figureAlign: 'right', answerSpacePx: 180 },
+                    { id: 'question-1', order: 0, errorItemId: 'item-1', sourceShortId: 'AbC234', status: 'ready', questionText: '试卷新题', answerText: '答', analysis: '析', figureSvg: figure, figureScale: 75, figureAlign: 'right', answerSpacePx: 180, score: 2.5 },
                     { id: 'question-2', order: 1, errorItemId: 'item-1', sourceShortId: 'AbC234', status: 'pending' },
                 ] },
             },
@@ -316,6 +340,7 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         expect(backup.examPapers[0].questions[0].figureScale).toBe(75);
         expect(backup.examPapers[0].questions[0].figureAlign).toBe('right');
         expect(backup.examPapers[0].questions[0].answerSpacePx).toBe(180);
+        expect(backup.examPapers[0].questions[0].score).toBe(2.5);
         await clearUserData();
         const { stats } = await importBackup(backup);
         expect(stats.examPapersCreated).toBe(1);
@@ -329,9 +354,9 @@ describe('数据导出后再导入（真实 SQLite）', () => {
             resultsRecordedAt: new Date('2026-10-22T00:00:00Z'), createdAt: new Date('2026-10-21T00:00:00Z'),
         });
         expect(paper.questions).toMatchObject([
-            { order: 0, errorItemId: item.id, sourceShortId: 'AbC234', status: 'ready', questionText: '试卷新题', figureSvg: figure, figureScale: 75, figureAlign: 'right', answerSpacePx: 180 },
-            // 导出时仍在生成的题目按失败导入，缺省配图比例为 100、位置为居中，留白按全局档位
-            { order: 1, errorItemId: item.id, status: 'failed', figureScale: 100, figureAlign: 'center', answerSpacePx: null },
+            { order: 0, errorItemId: item.id, sourceShortId: 'AbC234', status: 'ready', questionText: '试卷新题', figureSvg: figure, figureScale: 75, figureAlign: 'right', answerSpacePx: 180, score: 2.5 },
+            // 导出时仍在生成的题目按失败导入，缺省配图比例为 100、位置为居中，留白按全局档位，分值未设
+            { order: 1, errorItemId: item.id, status: 'failed', figureScale: 100, figureAlign: 'center', answerSpacePx: null, score: null },
         ]);
         expect(await database.practiceRecord.findFirstOrThrow({ where: { source: 'exam' } })).toMatchObject({ examQuestionId: paper.questions[0].id, errorItemId: item.id });
 
@@ -369,9 +394,52 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         legacyBackup.version = 7;
         await clearUserData();
         await importBackup(legacyBackup);
-        const legacyPaper = await database.examPaper.findFirstOrThrow({ where: { userId: 'user-1' } });
+        const legacyPaper = await database.examPaper.findFirstOrThrow({ where: { userId: 'user-1' }, include: { questions: { orderBy: { order: 'asc' } } } });
         expect(legacyPaper.mode).toBe('generate');
         expect(legacyPaper.difficulty).toBe('hard');
+
+        // 旧版文件没有 score 字段：导入后分值为空
+        expect(legacyPaper.questions[0].score).toBeNull();
+    });
+
+    it('试卷题目的 questionType 快照与 groupByType 开关随备份往返，旧版文件缺省 null/false', async () => {
+        await database.examPaper.create({
+            data: {
+                id: 'paper-sec', userId: 'user-1', title: '分大题卷', status: 'ready', scope: 'all', difficulty: 'medium', mode: 'generate',
+                requestedCount: 2, groupByType: true, subjectIds: JSON.stringify(['math']),
+                createdAt: new Date('2026-10-24T00:00:00Z'),
+                questions: { create: [
+                    { id: 'q-sec-1', order: 0, errorItemId: 'item-1', sourceShortId: 'AbC234', status: 'ready', questionText: '题1', questionType: 'single_choice', score: 2 },
+                    { id: 'q-sec-2', order: 1, errorItemId: 'item-2', sourceShortId: 'XyZ789', status: 'ready', questionText: '题2', questionType: null },
+                ] },
+            },
+        });
+        const backup = await exportBackup();
+        const paper = backup.examPapers.find((p: { id: string }) => p.id === 'paper-sec');
+        expect(paper.groupByType).toBe(true);
+        expect(paper.questions[0].questionType).toBe('single_choice');
+        expect(paper.questions[1].questionType ?? null).toBeNull();
+
+        await clearUserData();
+        await importBackup(backup);
+        const restored = await database.examPaper.findFirstOrThrow({ where: { userId: 'user-1', title: '分大题卷' }, include: { questions: { orderBy: { order: 'asc' } } } });
+        expect(restored.groupByType).toBe(true);
+        expect(restored.questions.map((question) => question.questionType)).toEqual(['single_choice', null]);
+
+        // 模拟旧版备份（version 10，无 groupByType 与 questionType 字段）：缺省 false / null
+        const legacyBackup = await exportBackup();
+        legacyBackup.version = 10;
+        for (const legacyPaper of legacyBackup.examPapers) {
+            delete legacyPaper.groupByType;
+            for (const question of legacyPaper.questions) {
+                delete question.questionType;
+            }
+        }
+        await clearUserData();
+        await importBackup(legacyBackup);
+        const legacy = await database.examPaper.findFirstOrThrow({ where: { userId: 'user-1', title: '分大题卷' }, include: { questions: { orderBy: { order: 'asc' } } } });
+        expect(legacy.groupByType).toBe(false);
+        expect(legacy.questions.map((question) => question.questionType)).toEqual([null, null]);
     });
 
     it('云端语音随备份导入、导出：只导出与动画讲解一致的语音，不合法的跳过，已有的不重复写入', async () => {

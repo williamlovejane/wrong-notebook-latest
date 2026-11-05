@@ -15,11 +15,13 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import type { Prisma, User } from "@prisma/client";
 import { z } from "zod";
-import { consumeAiQuota } from "@/lib/ai-quota";
+import { consumeAiQuota, quotaRejectionCode } from "@/lib/ai-quota";
+import type { ParsedQuestion } from "@/lib/ai";
 import { MAX_SPLIT_LINES } from "@/lib/ai/question-split";
 import type { QuestionSplitInput } from "@/lib/ai/question-split";
 import { createErrorResponse, ErrorCode, notFound, validationError } from "@/lib/api-errors";
 import { describeQuestion } from "@/lib/background-tasks";
+import { draftItemToParsed } from "@/lib/import/draft-to-parsed";
 import { getErrorMessage } from "@/lib/error-message";
 import { batchPhase, MAX_START_IMAGES_LENGTH } from "@/lib/import/import-batch-types";
 import type { ImportBatchCounts, ImportBatchDetail, ImportBatchSource, ImportBatchSplitter, ImportBatchStatus, ImportBatchSummary } from "@/lib/import/import-batch-types";
@@ -34,9 +36,10 @@ import { parsedQuestionToSavePayload } from "@/lib/question/parsed-question-payl
 import { runSerializedTransaction, serializeWrite } from "@/lib/db-write-queue";
 import { prisma } from "@/lib/prisma";
 import { mapAnalysisError, parseImageDataUrl, splitQuestionsForUser } from "@/lib/question/question-analysis";
-import { batchDraftSchema, draftFromTextSplit, newItemKey, readyItems } from "@/lib/question-split/draft";
+import { batchDraftSchema, draftFromTextSplit, draftImageSchema, MAX_DRAFT_TEXT_LENGTH, MAX_ITEM_KNOWLEDGE_POINTS, newItemKey, readyItems } from "@/lib/question-split/draft";
 import type { BatchDraft, DraftItem } from "@/lib/question-split/draft";
-import { compactLines, composeQuestionInput, MAX_SPLIT_TEXT_LENGTH, splitQuestionText } from "@/lib/question-split/text";
+import { compactLines, composeQuestionInput, MAX_SPLIT_QUESTIONS, MAX_SPLIT_TEXT_LENGTH, splitQuestionText } from "@/lib/question-split/text";
+import { normalizeQuestionType } from "@/lib/question/question-type";
 
 const logger = createLogger('import-batches');
 
@@ -60,6 +63,22 @@ const imageInfoSchema = z.object({
     quality: z.number().min(0).max(1).optional(),
 }).strip();
 
+/** 结构化题目条目（浏览器端解析题库文件后按草稿字段提交；宽松接受 null 与空串） */
+const structuredItemSchema = z.object({
+    text: z.string().max(MAX_DRAFT_TEXT_LENGTH),
+    material: z.string().max(MAX_DRAFT_TEXT_LENGTH).nullish(),
+    section: z.string().max(500).nullish(),
+    label: z.string().max(20).nullish(),
+    answer: z.string().max(MAX_DRAFT_TEXT_LENGTH).nullish(),
+    analysis: z.string().max(MAX_DRAFT_TEXT_LENGTH).nullish(),
+    knowledgePoints: z.array(z.string().max(200)).max(MAX_ITEM_KNOWLEDGE_POINTS).nullish(),
+    difficultyStars: z.number().int().min(1).max(5).nullish(),
+    wrongAnswer: z.string().max(MAX_DRAFT_TEXT_LENGTH).nullish(),
+    questionType: z.string().max(100).nullish(),
+    /** 题目原图 data URL（Word 内嵌图片或 JSON images 合成）；由草稿 schema 校验 */
+    image: draftImageSchema.nullish(),
+}).strip();
+
 export const createImportBatchSchema = z.object({
     clientRequestId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
     source: z.enum(['text', 'image']),
@@ -68,6 +87,16 @@ export const createImportBatchSchema = z.object({
     /** 编号像小问时，用户明确选择仍按编号分题 */
     forceNumbered: z.boolean().optional(),
     text: z.string().optional(),
+    /**
+     * 结构化题目列表：与 text 互斥；条目按草稿字段校验。
+     * 服务端直接构造草稿（不调用 AI、不计额度），供题库文件导入使用
+     */
+    items: z.array(structuredItemSchema).min(1).max(MAX_SPLIT_QUESTIONS).optional(),
+    /** 结构化批次来源说明（文件名与格式） */
+    origin: z.object({
+        fileName: z.string().max(300).optional(),
+        format: z.string().max(30).optional(),
+    }).strip().optional(),
     imageBase64: z.string().max(MAX_IMAGE_DATA_LENGTH).regex(IMAGE_DATA_PATTERN).optional(),
     imageInfo: imageInfoSchema.optional(),
     language: z.enum(['zh', 'en']).default('zh'),
@@ -75,8 +104,12 @@ export const createImportBatchSchema = z.object({
     targetSubjectId: z.string().max(100).nullish(),
     paperLevel: z.string().max(30).nullish(),
 }).superRefine((input, context) => {
-    if (input.source === 'text' && !input.text?.trim()) context.addIssue({ code: 'custom', path: ['text'], message: 'TEXT_REQUIRED' });
+    if (input.source === 'text' && !input.text?.trim() && !input.items?.length) context.addIssue({ code: 'custom', path: ['text'], message: 'TEXT_REQUIRED' });
+    if (input.source === 'text' && input.text?.trim() && input.items?.length) {
+        context.addIssue({ code: 'custom', path: ['items'], message: 'ITEMS_TEXT_EXCLUSIVE' });
+    }
     if (input.source === 'image' && !input.imageBase64) context.addIssue({ code: 'custom', path: ['imageBase64'], message: 'IMAGE_REQUIRED' });
+    if (input.origin && !input.items?.length) context.addIssue({ code: 'custom', path: ['origin'], message: 'ORIGIN_REQUIRES_ITEMS' });
 });
 
 const updateDraftSchema = z.object({ version: z.number().int().min(1), draft: batchDraftSchema });
@@ -89,6 +122,8 @@ const startSchema = z.object({
         imageBase64: z.string().max(MAX_IMAGE_DATA_LENGTH).regex(IMAGE_DATA_PATTERN),
         imageInfo: imageInfoSchema.optional(),
     })).max(60).optional(),
+    /** 逐题解析方式：ai 调用 AI 识别（默认，行为与之前一致）；tags 保留草稿答案解析、AI 只补知识点/难度/题型；none 按原样入库（不调用 AI、不计额度）。仅文字批次可用 tags/none */
+    analysis: z.enum(['ai', 'tags', 'none']).default('ai'),
 });
 
 /**
@@ -278,8 +313,10 @@ export async function createImportBatch(user: User, raw: unknown): Promise<Creat
     const parsed = createImportBatchSchema.safeParse(raw);
     if (!parsed.success) return { response: validationError('IMPORT_BATCH_INVALID_INPUT', parsed.error.issues) };
     const input = parsed.data;
-    // 超出上限的文字不截断处理，明确拒绝，由用户分次录入
-    if (input.source === 'text' && ((input.text?.length ?? 0) > MAX_SPLIT_TEXT_LENGTH || (input.splitter === 'ai' && compactLines(input.text ?? '').length > MAX_SPLIT_LINES))) {
+    const structuredItems = input.source === 'text' ? input.items ?? [] : [];
+    // 超出上限的文字不截断处理，明确拒绝，由用户分次录入（结构化条目走客户端分批，不受单批文字上限限制）
+    if (input.source === 'text' && !structuredItems.length
+        && ((input.text?.length ?? 0) > MAX_SPLIT_TEXT_LENGTH || (input.splitter === 'ai' && compactLines(input.text ?? '').length > MAX_SPLIT_LINES))) {
         return { response: validationError('IMPORT_BATCH_TEXT_TOO_LONG', { maxLength: MAX_SPLIT_TEXT_LENGTH, maxLines: MAX_SPLIT_LINES }) };
     }
 
@@ -294,7 +331,37 @@ export async function createImportBatch(user: User, raw: unknown): Promise<Creat
 
     const splitter: ImportBatchSplitter = input.source === 'image' ? 'ai' : input.splitter;
     let draft: BatchDraft | null = null;
-    if (splitter === 'local') {
+    if (structuredItems.length > 0) {
+        // 结构化题目直接构造草稿：不调用 AI、不计额度；题干非空默认选中
+        const keys: string[] = [];
+        draft = {
+            items: structuredItems.map((item): DraftItem => {
+                const key = newItemKey(keys);
+                keys.push(key);
+                return {
+                    key,
+                    label: item.label?.slice(0, 20) || null,
+                    text: item.text.slice(0, MAX_DRAFT_TEXT_LENGTH),
+                    material: item.material?.slice(0, MAX_DRAFT_TEXT_LENGTH) || null,
+                    section: item.section?.slice(0, 500) || null,
+                    selected: item.text.trim().length > 0,
+                    regions: [],
+                    hasFigure: false,
+                    flags: [],
+                    answer: item.answer?.slice(0, MAX_DRAFT_TEXT_LENGTH) || null,
+                    analysis: item.analysis?.slice(0, MAX_DRAFT_TEXT_LENGTH) || null,
+                    knowledgePoints: item.knowledgePoints?.slice(0, MAX_ITEM_KNOWLEDGE_POINTS),
+                    difficultyStars: item.difficultyStars ?? null,
+                    wrongAnswer: item.wrongAnswer?.slice(0, MAX_DRAFT_TEXT_LENGTH) || null,
+                    questionType: normalizeQuestionType(item.questionType),
+                    image: item.image ?? null,
+                };
+            }),
+            ignored: [],
+            warnings: [],
+        };
+        if (draft.items.length === 0) return { response: validationError('IMPORT_BATCH_EMPTY') };
+    } else if (splitter === 'local') {
         const split = splitQuestionText(input.text ?? '', { forceNumbered: input.forceNumbered });
         if (split.questions.length === 0) return { response: validationError('IMPORT_BATCH_EMPTY') };
         draft = draftFromTextSplit(split.questions, split.ignored, split.overflow);
@@ -302,6 +369,16 @@ export async function createImportBatch(user: User, raw: unknown): Promise<Creat
 
     const id = randomUUID().replace(/-/g, '');
     const release = splitter === 'ai' ? register(id) : () => undefined;
+    // 结构化批次：sourceText 存可读的拼接文本或文件名说明（不超现有列的合理长度）
+    let sourceText = input.source === 'text' ? input.text ?? null : null;
+    if (structuredItems.length > 0) {
+        if (input.origin?.fileName) {
+            sourceText = `文件导入：${input.origin.fileName}${input.origin.format ? `（${input.origin.format}）` : ''}`;
+        } else {
+            const excerpt = structuredItems[0].text.trim().slice(0, 100);
+            sourceText = excerpt ? `${structuredItems.length} 道结构化题目：${excerpt}${structuredItems.length > 1 ? '…' : ''}` : null;
+        }
+    }
     let batch: BatchWithTasks;
     try {
         batch = await serializeWrite(() => prisma.importBatch.create({
@@ -316,7 +393,7 @@ export async function createImportBatch(user: User, raw: unknown): Promise<Creat
                 subjectId: input.subjectId || null,
                 targetSubjectId: input.targetSubjectId || null,
                 paperLevel: input.paperLevel || null,
-                sourceText: input.source === 'text' ? input.text ?? null : null,
+                sourceText,
                 imageData: input.imageBase64 ?? '',
                 imageInfo: input.imageInfo ? JSON.stringify(input.imageInfo) : null,
                 draft: draft ? JSON.stringify(draft) : null,
@@ -345,7 +422,8 @@ export async function createImportBatch(user: User, raw: unknown): Promise<Creat
         const limited = await serializeWrite(() => consumeAiQuota(user, 'split'));
         if (limited) {
             release();
-            await serializeWrite(() => prisma.importBatch.updateMany({ where: { id, status: 'splitting' }, data: { status: 'failed', error: 'AI_DAILY_LIMIT_EXCEEDED', finishedAt: new Date() } }));
+            const rejection = await quotaRejectionCode(limited);
+            await serializeWrite(() => prisma.importBatch.updateMany({ where: { id, status: 'splitting' }, data: { status: 'failed', error: rejection, finishedAt: new Date() } }));
             return { response: limited };
         }
         scheduleWork(id, release, () => runSplit(id));
@@ -400,10 +478,32 @@ export async function startImportBatch(user: User, id: string, raw: unknown): Pr
         const total = items.reduce((sum, item) => sum + images.get(item.key)!.imageBase64.length, 0);
         if (total > MAX_START_IMAGES_LENGTH) return validationError('IMPORT_BATCH_TOO_LARGE');
     }
+    if (source === 'text') {
+        // 文字批次：草稿中的题目原图总长度沿用批次图片总上限
+        const total = items.reduce((sum, item) => sum + (item.image?.length ?? 0), 0);
+        if (total > MAX_START_IMAGES_LENGTH) return validationError('IMPORT_BATCH_TOO_LARGE');
+    }
     if (!await ownsNotebook(user.id, batch.targetSubjectId)) return validationError('IMPORT_TASK_INVALID_NOTEBOOK');
 
     const mode: ImportTaskMode = user.confirmBeforeImport ? 'review' : 'auto';
     const planned = items.map((item) => ({ item, id: randomUUID().replace(/-/g, '') }));
+
+    const analysis = parsed.data.analysis;
+    if (analysis === 'none' || analysis === 'tags') {
+        if (source !== 'text') return validationError('IMPORT_BATCH_ANALYSIS_NONE_TEXT_ONLY');
+        const targetNotebookId = batch.targetSubjectId ?? batch.subjectId;
+        if (!targetNotebookId) return validationError('IMPORT_BATCH_ANALYSIS_NONE_TARGET_REQUIRED');
+        const targetNotebook = await prisma.subject.findFirst({ where: { id: targetNotebookId, userId: user.id }, select: { name: true } });
+        if (!targetNotebook) return validationError('IMPORT_TASK_INVALID_NOTEBOOK');
+        const results = new Map(planned.map(({ item, id: taskId }) => [taskId, draftItemToParsed(item, { notebookName: targetNotebook.name })]));
+        const invalid = planned.find(({ id: taskId }) => !results.get(taskId));
+        if (invalid) {
+            logger.error({ batchId: id, key: invalid.item.key }, 'Import batch start failed: draft item cannot be converted to parsed question');
+            return createErrorResponse('IMPORT_BATCH_START_FAILED', 500, ErrorCode.INTERNAL_ERROR);
+        }
+        return await startWithDraftResults(user, batch, planned, results as Map<string, NonNullable<ReturnType<typeof draftItemToParsed>>>, mode, targetNotebookId, analysis);
+    }
+
     const releases = new Map(planned.map(({ id: taskId }) => [taskId, register(taskId)]));
     const releaseAll = () => releases.forEach((release) => release());
     try {
@@ -427,7 +527,8 @@ export async function startImportBatch(user: User, id: string, raw: unknown): Pr
                         subjectId: batch.subjectId,
                         targetSubjectId: batch.targetSubjectId,
                         paperLevel: batch.paperLevel,
-                        imageData: source === 'image' ? image!.imageBase64 : '',
+                        // ai 模式：图片批次按图片识别；文字批次带原图的题按图片识别（文字层作参考），纯文字题按文字识别
+                        imageData: source === 'image' ? image!.imageBase64 : (item.image ?? ''),
                         imageInfo: image?.imageInfo ? JSON.stringify(image.imageInfo) : null,
                         inputText: source === 'text' ? composeQuestionInput(item) : null,
                         batchId: id,
@@ -452,19 +553,132 @@ export async function startImportBatch(user: User, id: string, raw: unknown): Pr
         return createErrorResponse('IMPORT_BATCH_START_FAILED', 500, ErrorCode.INTERNAL_ERROR);
     }
 
-    // 抢占成功、任务已建出后逐题计额度；超额的题标记失败，可次日重试
+    // 抢占成功、任务已建出后逐题计额度；带原图的题按图片识别计 analyze 额度，纯文字题按 reanswer 计
     for (const { item, id: taskId } of planned) {
         const release = releases.get(taskId)!;
-        const limited = await serializeWrite(() => consumeAiQuota(user, quotaKindOf({ inputText: source === 'text' ? item.text : null })));
+        const imageData = source === 'image' ? images.get(item.key)!.imageBase64 : (item.image ?? '');
+        const limited = await serializeWrite(() => consumeAiQuota(user, quotaKindOf({ inputText: source === 'text' ? composeQuestionInput(item) : null, imageData })));
         if (limited) {
             release();
-            await markFailed(taskId, 'analyzing', 'AI_DAILY_LIMIT_EXCEEDED');
+            await markFailed(taskId, 'analyzing', await quotaRejectionCode(limited));
             continue;
         }
         scheduleImportTask(taskId, release);
     }
     logger.info({ batchId: id, source, mode, questions: planned.length }, 'Import batch started');
     const current = await findOwnBatch(user, id);
+    return NextResponse.json({ batch: toDetail(current!) }, { status: 202 });
+}
+
+type PlannedTask = { item: DraftItem; id: string };
+type ParsedResultMap = Map<string, ParsedQuestion>;
+
+/**
+ * 「按原样入库」（analysis='none'）与「AI 只补标签」（analysis='tags'）共用：
+ * 先用草稿字段构造识别结果写入 task.result，再按解析方式决定任务初始状态与后续处理。
+ *
+ * analysis='none'：任务直接以终态创建（review 或 saving），不调用 AI、不计额度；
+ *   saving 任务安排后台保存（executeTask 对 saving 任务跳过识别直接保存）。
+ * analysis='tags'：任务以 analyzing 状态创建；executeTask 检测到已有结果时仅调用 AI 补全缺失的
+ *   知识点、难度星级与题型（不重新完整识别），每题计一次 retag 额度。
+ *   已有值的字段保留；AI 失败或超额时按原结果继续入库（不失败）。
+ *
+ * 两种方式的 targetSubjectId 都固定为目标错题本（targetSubjectId ?? subjectId），
+ * 保证自动入库（autoSavePayload 只看 task.targetSubjectId）落到正确错题本。
+ */
+async function startWithDraftResults(
+    user: User,
+    batch: BatchWithTasks,
+    planned: PlannedTask[],
+    results: ParsedResultMap,
+    mode: ImportTaskMode,
+    targetNotebookId: string,
+    analysis: 'none' | 'tags',
+): Promise<NextResponse> {
+    const initialStatus: ImportTaskStatus = analysis === 'none'
+        ? (mode === 'review' ? 'review' : 'saving')
+        : 'analyzing';
+    const releases = new Map(planned.map(({ id: taskId }) => [taskId, register(taskId)]));
+    const releaseAll = () => releases.forEach((release) => release());
+    try {
+        await runSerializedTransaction(async (tx) => {
+            const claimed = await tx.importBatch.updateMany({
+                where: { id: batch.id, userId: user.id, status: 'draft', version: batch.version },
+                data: { status: 'started', mode, startedAt: new Date(), readAt: new Date(), error: null },
+            });
+            if (claimed.count === 0) throw new Error('IMPORT_BATCH_ALREADY_CLAIMED');
+            const now = new Date();
+            for (const { item, id: taskId } of planned) {
+                const result = results.get(taskId)!;
+                await tx.importTask.create({
+                    data: {
+                        id: taskId,
+                        userId: user.id,
+                        clientRequestId: taskId,
+                        mode,
+                        status: initialStatus,
+                        language: batch.language,
+                        subjectId: batch.subjectId,
+                        targetSubjectId: targetNotebookId,
+                        paperLevel: batch.paperLevel,
+                        imageData: item.image ?? '',
+                        inputText: null,
+                        result: JSON.stringify(result),
+                        batchId: batch.id,
+                        batchItemKey: item.key,
+                        timings: JSON.stringify({ client: {}, server: {} }),
+                        runnerId: bootId(),
+                        heartbeatAt: now,
+                        ...(initialStatus === 'review' ? { finishedAt: now, readAt: null } : {}),
+                    },
+                });
+            }
+        });
+    } catch (error) {
+        releaseAll();
+        if (getErrorMessage(error) === 'IMPORT_BATCH_ALREADY_CLAIMED') {
+            const current = await findOwnBatch(user, batch.id);
+            if (!current) return notFound('IMPORT_BATCH_NOT_FOUND');
+            if (current.status === 'started') return NextResponse.json({ batch: toDetail(current), alreadyStarted: true });
+            return conflict('IMPORT_BATCH_VERSION_CONFLICT', current);
+        }
+        logger.error({ batchId: batch.id, error: getErrorMessage(error) }, `Import batch start (${analysis}) failed`);
+        return createErrorResponse('IMPORT_BATCH_START_FAILED', 500, ErrorCode.INTERNAL_ERROR);
+    }
+
+    if (analysis === 'none') {
+        // 不计 AI 额度；自动入库的任务直接安排后台保存（saving 任务跳过识别）
+        for (const { id: taskId } of planned) {
+            if (mode !== 'review') scheduleImportTask(taskId, releases.get(taskId)!);
+            else releases.get(taskId)!();
+        }
+        logger.info({ batchId: batch.id, mode, questions: planned.length }, 'Import batch started (no analysis)');
+    } else {
+        // 每题计一次 retag 额度；超额的题不调用 AI、不标记失败，
+        // 直接把任务从 analyzing 推进到与正常完成识别后相同的下一状态（结果保持原样）
+        for (const { id: taskId } of planned) {
+            const release = releases.get(taskId)!;
+            const limited = await serializeWrite(() => consumeAiQuota(user, 'retag'));
+            if (limited) {
+                release();
+                const next: ImportTaskStatus = mode === 'auto' ? 'saving' : 'review';
+                await serializeWrite(() => prisma.importTask.updateMany({
+                    where: { id: taskId, status: 'analyzing' },
+                    data: {
+                        status: next,
+                        error: null,
+                        heartbeatAt: new Date(),
+                        ...(next === 'review' ? { finishedAt: new Date(), readAt: null } : {}),
+                    },
+                }));
+                if (next === 'saving') scheduleImportTask(taskId, register(taskId));
+                continue;
+            }
+            scheduleImportTask(taskId, release);
+        }
+        logger.info({ batchId: batch.id, mode, questions: planned.length }, 'Import batch started (tags only)');
+    }
+    const current = await findOwnBatch(user, batch.id);
     return NextResponse.json({ batch: toDetail(current!) }, { status: 202 });
 }
 
@@ -493,7 +707,8 @@ export async function retryImportBatch(user: User, id: string): Promise<NextResp
             const limited = await serializeWrite(() => consumeAiQuota(user, 'split'));
             if (limited) {
                 release();
-                await serializeWrite(() => prisma.importBatch.updateMany({ where: { id, status: 'splitting' }, data: { status: 'failed', error: 'AI_DAILY_LIMIT_EXCEEDED', finishedAt: new Date() } }));
+                const rejection = await quotaRejectionCode(limited);
+                await serializeWrite(() => prisma.importBatch.updateMany({ where: { id, status: 'splitting' }, data: { status: 'failed', error: rejection, finishedAt: new Date() } }));
                 return limited;
             }
             scheduleWork(id, release, () => runSplit(id));

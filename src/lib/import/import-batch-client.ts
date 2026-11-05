@@ -14,6 +14,10 @@ export interface CreateImportBatchInput {
     /** 编号像小问时仍按编号分题 */
     forceNumbered?: boolean;
     text?: string;
+    /** 结构化题目（与 text 互斥；服务端直接构造草稿，不调用 AI） */
+    items?: Array<Record<string, unknown>>;
+    /** 结构化批次来源说明（文件名与格式） */
+    origin?: { fileName?: string; format?: string };
     imageBase64?: string;
     imageInfo?: ImportImageInfo;
     language: "zh" | "en";
@@ -53,6 +57,8 @@ export async function createImportBatch(input: CreateImportBatchInput, clientReq
         subjectId: input.subjectId || undefined,
         targetSubjectId: input.targetSubjectId || undefined,
         paperLevel: input.paperLevel || undefined,
+        items: input.items?.map((item) => ({ ...item })),
+        origin: input.origin,
     }, { timeout: UPLOAD_TIMEOUT_MS }));
     notifyImportTasksChanged();
     return batch;
@@ -75,9 +81,9 @@ export interface BatchItemImage {
     imageInfo?: ImportImageInfo;
 }
 
-export async function startImportBatch(id: string, version: number, images?: BatchItemImage[]): Promise<ImportBatchDetail> {
+export async function startImportBatch(id: string, version: number, images?: BatchItemImage[], analysis?: "ai" | "tags" | "none"): Promise<ImportBatchDetail> {
     const { batch } = await withRetry(() => apiClient.post<{ batch: ImportBatchDetail }>(
-        `/api/import-batches/${encodeURIComponent(id)}/start`, { version, images }, { timeout: UPLOAD_TIMEOUT_MS }));
+        `/api/import-batches/${encodeURIComponent(id)}/start`, { version, images, analysis }, { timeout: UPLOAD_TIMEOUT_MS }));
     notifyImportTasksChanged();
     return batch;
 }
@@ -119,7 +125,11 @@ export interface ImportBatchTextFixResult {
 /** 修正多题时耗时较长：超时放宽，连接中断后可取回响应 */
 const TEXT_FIX_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** 为若干题生成「AI 修正文字」建议（不改动服务端草稿） */
-export async function fixImportBatchText(id: string, items: Array<{ key: string; text: string }>): Promise<ImportBatchTextFixResult> {
-    return apiClient.post<ImportBatchTextFixResult>(`/api/import-batches/${encodeURIComponent(id)}/fix-text`, { items }, { timeout: TEXT_FIX_TIMEOUT_MS, recoverable: true });
+/** 为若干题生成「AI 修正文字」建议（不改动服务端草稿）；requestId 用于断线后取回响应 */
+export async function fixImportBatchText(id: string, items: Array<{ key: string; text: string }>, requestId?: string): Promise<ImportBatchTextFixResult> {
+    return apiClient.post<ImportBatchTextFixResult>(
+        `/api/import-batches/${encodeURIComponent(id)}/fix-text`,
+        { items },
+        { timeout: TEXT_FIX_TIMEOUT_MS, recoverable: true, requestId },
+    );
 }

@@ -43,7 +43,7 @@ describe('AI Prompts', () => {
             const prompt = generateAnalyzePrompt('zh', 7, '数学');
             expect(prompt).toContain('<has_figure>');
             expect(prompt).toContain('<figure_svg>');
-            expect(prompt).toContain('13 个 XML 标签');
+            expect(prompt).toContain('14 个 XML 标签');
             expect(prompt).toContain('严禁使用 <image>、<script>');
         });
 
@@ -471,8 +471,9 @@ describe('掌握概率与学科相关提示词', () => {
     it('重新解题提示词要求输出学科标签', () => {
         const prompt = generateReanswerPrompt('zh', '1+1=?');
         expect(prompt).toContain('<subject>');
-        expect(prompt).toContain('9 个 XML 标签');
+        expect(prompt).toContain('10 个 XML 标签');
         expect(prompt).toContain('<difficulty_stars>');
+        expect(prompt).toContain('<question_type>');
     });
 });
 
@@ -514,6 +515,18 @@ describe('知识点重新标注提示词', () => {
         const prompt = generateTagSuggestPrompt({ questionText: '1+1=?', subject: '数学', allowedTags: ['加法'] });
         expect(prompt).toContain('【解答过程】\n（无）');
         expect(prompt).toContain('【学生作答】\n（无）');
+    });
+
+    it('提示词同时要求输出题型 key（与识别提示词的 question_type 一致）', () => {
+        const prompt = generateTagSuggestPrompt({
+            questionText: '下列说法正确的是（　）A.… B.…',
+            subject: '数学',
+            allowedTags: ['加法'],
+        });
+        expect(prompt).toContain('【题型规则】');
+        expect(prompt).toContain('single_choice');
+        expect(prompt).toContain('questionType');
+        expect(prompt).toContain('"questionType": "single_choice"');
     });
 });
 

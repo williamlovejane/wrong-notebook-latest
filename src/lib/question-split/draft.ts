@@ -2,6 +2,7 @@
  * 多题批次的分题草稿：预览页编辑、服务端保存与开始解析共用的结构和校验（不依赖数据库，可在浏览器中引用）。
  */
 import { z } from "zod";
+import { normalizeQuestionType } from "@/lib/question/question-type";
 import { MAX_SPLIT_QUESTIONS } from "@/lib/question-split/text";
 import type { SplitTextQuestion } from "@/lib/question-split/text";
 
@@ -24,6 +25,18 @@ export type DraftRegion = z.infer<typeof draftRegionSchema>;
 /** 需要用户留意的情况：模型标记看不清、只识别到部分、或没有给出可用区域 */
 export const DRAFT_ITEM_FLAGS = ['unclear', 'partial', 'unlocated'] as const;
 export type DraftItemFlag = typeof DRAFT_ITEM_FLAGS[number];
+
+/** 一题最多关联的知识点个数；单个知识点名称的上限 */
+export const MAX_ITEM_KNOWLEDGE_POINTS = 100;
+export const MAX_KNOWLEDGE_POINT_LENGTH = 200;
+
+/** 单张题目图片 data URL 的字符数上限（约 1.5MB）；超限由前端导入阶段丢弃并提示 */
+export const MAX_DRAFT_IMAGE_LENGTH = 3 * 512 * 1024;
+
+/** 题目原图 data URL 的校验（jpeg/png/webp）；失败时返回明确错误码而非笼统 400 */
+export const draftImageSchema = z.string()
+    .max(MAX_DRAFT_IMAGE_LENGTH, 'DRAFT_IMAGE_TOO_LARGE')
+    .regex(/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/, 'DRAFT_IMAGE_INVALID');
 
 /** AI 修正文字的建议：基于 original 生成，用户接受前题目仍按原文解析 */
 export const draftTextFixSchema = z.object({
@@ -48,6 +61,20 @@ export const draftItemSchema = z.object({
     flags: z.array(z.enum(DRAFT_ITEM_FLAGS)).max(DRAFT_ITEM_FLAGS.length),
     /** 待确认的 AI 修正建议（只用于文字批次）；旧草稿没有此字段 */
     fix: draftTextFixSchema.nullish(),
+    /** 参考答案（题库文件自带时按原样带入，不调用 AI）；旧草稿没有此字段 */
+    answer: z.string().max(MAX_DRAFT_TEXT_LENGTH).nullish(),
+    /** 参考解析；旧草稿没有此字段 */
+    analysis: z.string().max(MAX_DRAFT_TEXT_LENGTH).nullish(),
+    /** 知识点名称列表；旧草稿没有此字段 */
+    knowledgePoints: z.array(z.string().max(MAX_KNOWLEDGE_POINT_LENGTH)).max(MAX_ITEM_KNOWLEDGE_POINTS).optional(),
+    /** 难度星级（1～5）；旧草稿没有此字段 */
+    difficultyStars: z.number().int().min(1).max(5).nullish(),
+    /** 题型（question-type.ts 中的 key）；旧草稿没有此字段 */
+    questionType: z.string().max(200).nullish(),
+    /** 学生的错误作答；旧草稿没有此字段 */
+    wrongAnswer: z.string().max(MAX_DRAFT_TEXT_LENGTH).nullish(),
+    /** 题目原图；旧草稿没有此字段 */
+    image: draftImageSchema.nullish(),
 });
 export type DraftItem = z.infer<typeof draftItemSchema>;
 
@@ -93,6 +120,12 @@ export function draftFromTextSplit(questions: SplitTextQuestion[], ignored: stri
             regions: [],
             hasFigure: false,
             flags: [],
+            answer: question.answer ?? null,
+            analysis: question.analysis ?? null,
+            knowledgePoints: question.knowledgePoints?.slice(0, MAX_ITEM_KNOWLEDGE_POINTS),
+            difficultyStars: question.difficultyStars ?? null,
+            questionType: normalizeQuestionType(question.questionType),
+            wrongAnswer: question.wrongAnswer ?? null,
         };
     });
     return { items, ignored: ignored.slice(0, 200), warnings: overflow > 0 || questions.length > MAX_SPLIT_QUESTIONS ? ['tooMany'] : [] };

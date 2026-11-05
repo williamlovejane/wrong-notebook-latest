@@ -26,6 +26,10 @@ export const ErrorCode = {
     VALIDATION_ERROR: 'VALIDATION_ERROR',
     OPERATION_NOT_ALLOWED: 'OPERATION_NOT_ALLOWED',
 
+    // 未授权 (403)
+    /** 用户尚未同意把题目等数据发送给第三方 AI 服务商 */
+    AI_CONSENT_REQUIRED: 'AI_CONSENT_REQUIRED',
+
     // 请求过多 (429)
     AI_DAILY_LIMIT_EXCEEDED: 'AI_DAILY_LIMIT_EXCEEDED',
     TOO_MANY_REQUESTS: 'TOO_MANY_REQUESTS',
@@ -33,6 +37,8 @@ export const ErrorCode = {
     // 冲突 (409)
     CONFLICT: 'CONFLICT',
     ALREADY_EXISTS: 'ALREADY_EXISTS',
+    /** 同一目标的后台任务正在运行（按 target 防重复），body 中附带原任务 */
+    TASK_ALREADY_RUNNING: 'TASK_ALREADY_RUNNING',
 
     // 服务器错误 (500)
     INTERNAL_ERROR: 'INTERNAL_ERROR',

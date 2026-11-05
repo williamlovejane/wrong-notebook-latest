@@ -161,7 +161,7 @@ describe('AnthropicProvider', () => {
 
         const tags = await provider.suggestKnowledgeTags({ questionText: '2+3', subject: '数学', allowedTags: ['加法', '减法'] });
 
-        expect(tags).toEqual({ tags: ['加法'], difficultyStars: null });
+        expect(tags).toEqual({ tags: ['加法'], difficultyStars: null, questionType: null });
     });
 
     it('单独重绘配图：以图片块发送并解析配图', async () => {
@@ -331,7 +331,7 @@ describe('请求材料边界与标签约束回归', () => {
         expect(result.knowledgePoints).toEqual(['加法']);
         const request = mocks.create.mock.calls.at(-1)?.[0];
         expect(request.system).not.toContain(question);
-        expect(request.system).toContain('9 个 XML 标签');
+        expect(request.system).toContain('10 个 XML 标签');
         expect(JSON.parse(request.messages[0].content).data.questionText).toBe(question);
         expect(JSON.parse(request.messages[0].content).data.tagOptions.candidateTags).toEqual(candidates);
         const empty = await provider.reanswerQuestion(question, 'zh', '数学', undefined, null, { subjectName: '数学', tags: [] });

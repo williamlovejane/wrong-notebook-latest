@@ -9,7 +9,7 @@ import { parseNarration, sanitizeSvgAnimation } from '../svg-animation';
 import type { NarrationSegment } from '../svg-animation';
 import { parseLatexFix } from './latex-fix';
 import { getAppConfig } from '../config';
-import { parseGradeRecognition, parseMasteryEvaluation, parseAnswerGrading, normalizeSubject, parseTagSuggestion, parseDifficultyStars, parseFigure } from './schema';
+import { parseGradeRecognition, parseMasteryEvaluation, parseAnswerGrading, normalizeSubject, parseTagSuggestion, parseDifficultyStars, parseQuestionType, parseFigure } from './schema';
 import { extractTag, parseQuestionResponse, splitKnowledgePoints } from './response-parser';
 import { prefetchSubjectTags } from './tag-service';
 import { createLogger } from '../logger';
@@ -73,13 +73,13 @@ export abstract class BaseAIProvider implements AIService {
         throw new Error(code, { cause: error });
     }
 
-    async analyzeImage(imageBase64: string, mimeType: string = "image/jpeg", language: 'zh' | 'en' = 'zh', grade?: GradeLevel | null, subject?: string | null, gradeSemester?: string | null, candidateTags?: CandidateTags): Promise<ParsedQuestion> {
+    async analyzeImage(imageBase64: string, mimeType: string = "image/jpeg", language: 'zh' | 'en' = 'zh', grade?: GradeLevel | null, subject?: string | null, gradeSemester?: string | null, candidateTags?: CandidateTags, referenceText?: string | null): Promise<ParsedQuestion> {
         const config = getAppConfig();
         const tagOptions = candidateTags ? { candidateTags } : await prefetchSubjectTags(subject, grade);
         const systemPrompt = generateAnalyzeRequest(language, grade, subject, {
             customTemplate: config.prompts?.analyze,
             ...tagOptions,
-        }, gradeSemester);
+        }, gradeSemester, referenceText);
 
         logger.box('🔍 AI Image Analysis Request', {
             provider: this.providerName,
@@ -164,6 +164,7 @@ export abstract class BaseAIProvider implements AIService {
                 subject: normalizeSubject(extractTag(text, "subject")),
                 gradeSemester: parseRecognizedGrade(extractTag(text, "grade_semester")),
                 difficultyStars: parseDifficultyStars(extractTag(text, "difficulty_stars")),
+                questionType: parseQuestionType(extractTag(text, "question_type")),
             }, { candidateTags });
         } catch (error) {
             logger.error({ error, stack: error instanceof Error ? error.stack : undefined }, 'Error during reanswer');

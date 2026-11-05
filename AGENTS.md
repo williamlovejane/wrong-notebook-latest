@@ -97,7 +97,7 @@ bash scripts/ci.sh          # 完整 CI（要求 Node.js 22 及以上，含生�
 - `src/__tests__/integration/data-backup.test.ts` — 数据备份测试，验证导出后导入能完整还原
 
 **导入导出格式约定：**
-- 导出文件 `version` 字段定义在 `src/lib/backup/format.ts` 的 `BACKUP_VERSION` 常量：新增字段时版本号 +1（当前 version 8）
+- 导出文件 `version` 字段定义在 `src/lib/backup/format.ts` 的 `BACKUP_VERSION` 常量：新增字段时版本号 +1（当前 version 11）
 - 旧版导出文件没有的新字段，导入时必须有默认值或跳过逻辑
 - 多标签体系数据（`tagSet`）需按体系分组导出和导入，避免混淆
 
@@ -118,6 +118,7 @@ bash scripts/ci.sh          # 完整 CI（要求 Node.js 22 及以上，含生�
 ## 文档同步
 
 - 功能、配置项或默认值变化时，同步更新 `README.md` 与 `README.en.md`，以及受影响的 `doc/`、`doc/wiki/` 页面；Wiki 中文页面改动时同步更新 `doc/wiki/en/` 中对应的英文页面，发布流程见 `doc/WIKI_PUBLISHING.md`。
+- `doc/PRIVACY.md` / `doc/PRIVACY.en.md` 改动时，同步官网的隐私政策页（`privacy/index.html`、`en/privacy/index.html`），应用内链接指向官网版本。
 - 面向用户的功能变化（如新增 AI 提供商、安装方式）同时更新官网项目 `../wrong-notebook-github-pages`（中文 `index.html` 与英文 `en/index.html`），该项目单独提交并推送。
 
 ## 临时文件

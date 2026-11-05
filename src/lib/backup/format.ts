@@ -8,7 +8,7 @@ import { z } from "zod";
  */
 
 /** 当前备份文件版本号 */
-export const BACKUP_VERSION = 8;
+export const BACKUP_VERSION = 11;
 
 /** 备份文件中的用户对象 */
 export interface BackupUser {
@@ -115,6 +115,8 @@ export interface BackupErrorItem {
     figureAlign?: string;
     /** version 4 起导出，旧版备份缺省为按全局留白档位 */
     answerSpacePx?: number | null;
+    /** version 9 起导出，旧版备份缺省为 null */
+    questionType?: string | null;
     /** 以下字段 version 2 起导出 */
     geogebraCommands?: string | null;
     svgAnimation?: string | null;
@@ -177,6 +179,10 @@ export interface BackupExamQuestion {
     figureAlign?: string;
     /** version 4 起导出，旧版备份缺省为按全局留白档位 */
     answerSpacePx?: number | null;
+    /** version 10 起导出，旧版备份缺省为未设分值 */
+    score?: number | null;
+    /** version 11 起导出，旧版备份缺省为 null（分组时回退读取关联错题当前题型） */
+    questionType?: string | null;
     error: string | null;
 }
 
@@ -190,6 +196,8 @@ export interface BackupExamPaper {
     difficulty: string;
     /** version 8 起导出，旧版缺省 generate */
     mode?: string;
+    /** version 11 起导出，旧版缺省 false（不按题型分大题） */
+    groupByType?: boolean;
     requestedCount: number;
     subjectIds: string;
     tagNames: string | null;

@@ -12,14 +12,16 @@ import { Input } from "@/components/ui/input";
 import { BackButton } from "@/components/ui/back-button";
 import { PageLoading } from "@/components/ui/page-loading";
 import { ExamFigureScaleBar } from "@/components/exam/exam-figure-scale-bar";
-import { ExamQuestionCard } from "@/components/exam/exam-question-card";
 import { ExamStatusBadge } from "@/components/exam/exam-status-badge";
+import { ExamDetailQuestions } from "./exam-detail-questions";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { usePageTitle } from "@/lib/page-title";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, ApiError } from "@/lib/api-client";
+import { useRunningTask } from "@/lib/hooks/use-running-task";
+import { formatExamScore, summarizeExamScores } from "@/lib/exam/exam-score";
 import type { FigureAlign } from "@/lib/figure-scale";
 import type { ExamPaperDetail, PracticeResult } from "@/types/api";
-import { confirmDialog } from "@/lib/feedback";
+import { confirmDialog, toast } from "@/lib/feedback";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -38,6 +40,10 @@ export default function ExamDetailPage() {
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [uniformPreview, setUniformPreview] = useState<{ scale: number | null; align: FigureAlign | null }>({ scale: null, align: null });
+
+    // 重试失败题目：同一试卷同一时刻只允许一个生成任务；刷新后若任务仍在进行，禁用按钮
+    const retryTarget = `exam-paper:${paperId}:generate`;
+    const { running: retryRunning, refresh: refreshRetryTask } = useRunningTask(retryTarget);
 
     const load = useCallback(async () => {
         try {
@@ -109,7 +115,16 @@ export default function ExamDetailPage() {
     };
 
     const retryFailed = async () => {
-        await apiClient.post(`/api/exams/${paper.id}/retry`, { language });
+        try {
+            await apiClient.post(`/api/exams/${paper.id}/retry`, { language });
+        } catch (error) {
+            if (error instanceof ApiError && error.status === 409 && (error.data as { code?: string })?.code === "TASK_ALREADY_RUNNING") {
+                toast.info(t.errors.TASK_ALREADY_RUNNING);
+                await refreshRetryTask();
+            } else {
+                throw error;
+            }
+        }
         await load();
     };
 
@@ -135,6 +150,31 @@ export default function ExamDetailPage() {
         } : prev));
     };
 
+    const saveQuestionScore = async (questionId: string, score: number | null) => {
+        await apiClient.patch(`/api/exams/${paper.id}`, { questionId, score });
+        setPaper((prev) => (prev ? {
+            ...prev,
+            questions: prev.questions.map((question) => (question.id === questionId ? { ...question, score } : question)),
+        } : prev));
+    };
+
+    const saveUniformScore = async (score: number | null) => {
+        await apiClient.patch(`/api/exams/${paper.id}`, { score });
+        setPaper((prev) => (prev ? {
+            ...prev,
+            questions: prev.questions.map((question) => ({ ...question, score })),
+        } : prev));
+    };
+
+    const saveGroupByType = async (groupByType: boolean) => {
+        await apiClient.patch(`/api/exams/${paper.id}`, { groupByType });
+        setPaper((prev) => (prev ? { ...prev, groupByType } : prev));
+    };
+
+    const readyScoreSummary = summarizeExamScores(
+        paper.questions.filter((question) => question.status === "ready").map((question) => question.score ?? null)
+    );
+
     return (
         <main className="mx-auto min-h-screen max-w-6xl px-4 py-6 md:px-8 md:py-8">
             <div className="space-y-6 pb-24">
@@ -146,6 +186,14 @@ export default function ExamDetailPage() {
                             <ExamStatusBadge status={paper.status} recorded={recorded} />
                             {paper.mode === 'original' && <Badge variant="secondary">{t.exam.modes.original}</Badge>}
                             <span>{t.exam.progress.replace("{ready}", String(readyCount)).replace("{total}", String(paper.questions.length))}</span>
+                            {readyScoreSummary.total !== null && (
+                                <span>
+                                    {t.exam.totalScore.replace("{total}", formatExamScore(readyScoreSummary.total))}
+                                    {readyScoreSummary.unscored > 0 && (
+                                        <span className="text-xs">（{t.exam.totalScoreUnscored.replace("{count}", String(readyScoreSummary.unscored))}）</span>
+                                    )}
+                                </span>
+                            )}
                             <span>{formatDateTime(paper.createdAt, "yyyy-MM-dd HH:mm", timeZone)}</span>
                         </div>
                     </div>
@@ -165,9 +213,9 @@ export default function ExamDetailPage() {
                         </Button>
                     )}
                     {hasFailed && paper.status !== "generating" && (
-                        <Button variant="outline" size="sm" onClick={retryFailed}>
-                            <RotateCcw className="mr-2 h-4 w-4" />
-                            {t.exam.retryFailed}
+                        <Button variant="outline" size="sm" onClick={retryFailed} disabled={!!retryRunning}>
+                            {retryRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCcw className="mr-2 h-4 w-4" />}
+                            {retryRunning ? t.exam.questionPending : t.exam.retryFailed}
                         </Button>
                     )}
                     <Button variant="ghost" size="sm" onClick={deletePaper} className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 sm:ml-auto">
@@ -202,23 +250,21 @@ export default function ExamDetailPage() {
                     />
                 )}
 
-                <div className="space-y-3">
-                    {paper.questions.map((question) => (
-                        <ExamQuestionCard
-                            key={question.id}
-                            paperId={paper.id}
-                            paperMode={paper.mode}
-                            question={question}
-                            editingResult={draft ? draft[question.id] ?? null : undefined}
-                            onResultChange={(result) => setDraft((prev) => (prev ? { ...prev, [question.id]: result } : prev))}
-                            onDeleteAttempt={deleteAttempt}
-                            onRegenerated={load}
-                            previewFigureScale={uniformPreview.scale}
-                            previewFigureAlign={uniformPreview.align}
-                            onSaveFigureScale={saveQuestionFigureScale}
-                        />
-                    ))}
-                </div>
+                <ExamDetailQuestions
+                    paperId={paper.id}
+                    paperMode={paper.mode}
+                    groupByType={paper.groupByType}
+                    questions={paper.questions}
+                    draft={draft}
+                    onResultChange={(questionId, result) => setDraft((prev) => (prev ? { ...prev, [questionId]: result } : prev))}
+                    onDeleteAttempt={deleteAttempt}
+                    onRegenerated={load}
+                    uniformPreview={uniformPreview}
+                    onSaveFigureScale={saveQuestionFigureScale}
+                    onSaveScore={saveQuestionScore}
+                    onSaveUniformScore={saveUniformScore}
+                    onSaveGroupByType={saveGroupByType}
+                />
 
                 {draft && (
                     <div className="fixed inset-x-0 bottom-16 z-30 border-t bg-background/95 p-3 backdrop-blur md:bottom-0">
