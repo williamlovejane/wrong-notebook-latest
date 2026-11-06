@@ -26,7 +26,7 @@ vi.mock('@/lib/config', () => ({
 }));
 
 import { getAppVersion } from '@/lib/app-version';
-import { envelopeSchema, validateItems } from '@/lib/telemetry/ingest-contract';
+import { envelopeSchema, utcDay, validateItems } from '@/lib/telemetry/ingest-contract';
 import { DEFAULT_FLUSH_INTERVAL_MS, flushOutbox, getOutboxRuntime, resetOutboxRuntime } from '@/lib/telemetry/outbox';
 import { clearTelemetry, resetErrorDedupe, writeTelemetryError } from '@/lib/telemetry/server';
 import { getTelemetryState } from '@/lib/telemetry/state';
@@ -99,7 +99,8 @@ describe('批次内容', () => {
         const body = sentBody(fetchMock);
         const envelope = envelopeSchema.parse(body);
         expect(validateItems(envelope.items, NOW)).toMatchObject({ rejected: 0 });
-        expect(body.items).toContainEqual({ t: 'event', day: '2026-11-05', name: 'instance_alive', payload: { platform: 'fnos', aiConfigured: true } });
+        // instance_alive 由数据库默认值写入真实当前时间，日期按系统 UTC 当天算，不能用模拟的 NOW
+        expect(body.items).toContainEqual({ t: 'event', day: utcDay(new Date()), name: 'instance_alive', payload: { platform: 'fnos', aiConfigured: true } });
         const raw = JSON.stringify(body);
         expect(raw).not.toMatch(/secret|a@b\.com|error-items|at f/);
         // 本地记录开启：标记为已发并保留
