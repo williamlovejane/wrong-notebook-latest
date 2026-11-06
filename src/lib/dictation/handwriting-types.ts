@@ -79,3 +79,18 @@ export interface ReviewListResponse {
     reviewed?: ReviewListItem[];
 }
 
+/**
+ * 单字标准笔顺数据，结构与 hanzi-writer 的 CharacterJson 一致。
+ * strokes 是每笔的 SVG 路径，medians 是笔画中轴线（动画与临摹判定用）。
+ */
+export interface HanziCharacterData {
+    strokes: string[];
+    medians: number[][][];
+    radStrokes?: number[];
+}
+
+/** 只有单个汉字才有标准笔顺；词语、标点、英文字母直接跳过，也防止拼出越界文件路径 */
+export function isStandardStrokeChar(char: string): boolean {
+    return /^[\u3400-\u4dbf\u4e00-\u9fff]$/.test(char);
+}
+

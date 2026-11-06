@@ -5,9 +5,11 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { BackButton } from "@/components/ui/back-button";
+import { StandardStroke } from "@/components/dictation/standard-stroke";
+import { StrokePracticeDialog } from "@/components/dictation/stroke-practice-dialog";
 import { apiClient } from "@/lib/api-client";
 import { DEBUG_NOW_STORAGE_KEY, parseDebugNow } from "@/lib/dictation/debug-time";
-import type { ReviewListItem, ReviewListResponse } from "@/lib/dictation/handwriting-types";
+import { isStandardStrokeChar, type ReviewListItem, type ReviewListResponse } from "@/lib/dictation/handwriting-types";
 import {
     Loader2,
     ClipboardList,
@@ -61,11 +63,14 @@ interface CardProps {
     index: number;
     reviewing: boolean;
     onReview: (row: ReviewListItem, correct: boolean) => void;
+    onPractice: (char: string) => void;
 }
 
-function HandwritingCard({ row, index, reviewing, onReview }: CardProps) {
+function HandwritingCard({ row, index, reviewing, onReview, onPractice }: CardProps) {
     const images = parseStrings(row.images);
     const animations = parseStrings(row.animations);
+    /** 成品图与书写过程按字格排列，标准笔顺按同一顺序并排展示 */
+    const chars = Array.from(row.expected);
     const [replayKeys, setReplayKeys] = useState<Record<number, number>>({});
     const effective = row.manualCorrect ?? row.correct;
 
@@ -91,8 +96,9 @@ function HandwritingCard({ row, index, reviewing, onReview }: CardProps) {
             <div className="mb-3 flex flex-wrap gap-3">
                 {images.map((image, i) => {
                     const animation = animations[i];
+                    const char = chars[i] ?? "";
                     return (
-                        <div key={i} className="flex gap-2">
+                        <div key={i} className="flex flex-wrap gap-2">
                             <div className="flex flex-col items-center gap-1">
                                 <img
                                     src={image}
@@ -120,6 +126,12 @@ function HandwritingCard({ row, index, reviewing, onReview }: CardProps) {
                                     </button>
                                 </div>
                             )}
+                            <StandardStroke
+                                char={char}
+                                size={112}
+                                replayKey={replayKeys[i] ?? 0}
+                                onPractice={isStandardStrokeChar(char) ? () => onPractice(char) : undefined}
+                            />
                         </div>
                     );
                 })}
@@ -174,6 +186,8 @@ export default function SubmissionsPage() {
     const [loading, setLoading] = useState(true);
     const [reviewingId, setReviewingId] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    /** 当前打开临摹弹层的字；整页共用一个弹层，不为每张卡片各建一个 */
+    const [practiceChar, setPracticeChar] = useState<string | null>(null);
 
     useEffect(() => {
         // 默认按真实今天查询；调试模式下的模拟日期由 load() 额外合并进来
@@ -316,6 +330,7 @@ export default function SubmissionsPage() {
                             index={index}
                             reviewing={reviewingId === row.id}
                             onReview={(item, correct) => void review(item, correct)}
+                            onPractice={(char) => setPracticeChar(char)}
                         />
                     ))}
                 </div>
@@ -337,12 +352,14 @@ export default function SubmissionsPage() {
                                     index={index}
                                     reviewing={reviewingId === row.id}
                                     onReview={(item, correct) => void review(item, correct)}
+                                    onPractice={(char) => setPracticeChar(char)}
                                 />
                             ))}
                         </div>
                     )}
                 </div>
             )}
+            <StrokePracticeDialog char={practiceChar} onClose={() => setPracticeChar(null)} />
         </div>
     );
 }
