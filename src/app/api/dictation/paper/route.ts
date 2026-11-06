@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { buildChinesePrompt, PromptError, type PromptUser } from "@/lib/dictation/prompt";
+import { findAwaitingReviewCardIds } from "@/lib/dictation/awaiting-review";
 import { isDue } from "@/lib/dictation/schedule";
 import { resolveDebugNow } from "@/lib/dictation/debug-time";
 import { unauthorized, internalError } from "@/lib/api-errors";
@@ -32,21 +33,27 @@ export async function POST(req: Request) {
     try {
         const now = resolveDebugNow(req, user.role) ?? new Date();
 
-        const cards = await prisma.reviewCard.findMany({
-            where: {
-                userId: user.id,
-                status: { in: ["active", "mastered"] },
-                entry: { kind: "chinese_char" },
-            },
-            include: {
-                entry: {
-                    select: { id: true, kind: true, text: true, pinyin: true },
+        const [cards, awaitingReview] = await Promise.all([
+            prisma.reviewCard.findMany({
+                where: {
+                    userId: user.id,
+                    status: { in: ["active", "mastered"] },
+                    entry: { kind: "chinese_char" },
                 },
-            },
-            orderBy: [{ dueAt: "asc" }],
-        });
+                include: {
+                    entry: {
+                        select: { id: true, kind: true, text: true, pinyin: true },
+                    },
+                },
+                orderBy: [{ dueAt: "asc" }],
+            }),
+            findAwaitingReviewCardIds(user.id),
+        ]);
 
-        const due = cards.filter((c) => isDue(c.dueAt, now)).slice(0, MAX_PAPER_ITEMS);
+        // 已交卷待人工判卷的字不再重复出到新试卷上，判卷后才按新排期出现
+        const due = cards
+            .filter((c) => !awaitingReview.has(c.id) && isDue(c.dueAt, now))
+            .slice(0, MAX_PAPER_ITEMS);
 
         // 出新卷前清掉这批卡的悬空待判分记录（在线没答完/旧试卷）
         if (due.length > 0) {

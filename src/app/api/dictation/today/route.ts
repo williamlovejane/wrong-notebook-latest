@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { isDictationKind } from "@/lib/dictation/types";
+import { findAwaitingReviewCardIds } from "@/lib/dictation/awaiting-review";
 import { resolveDebugNow } from "@/lib/dictation/debug-time";
 import { describeStage, isDue, overdueDays, REVIEW_INTERVALS, type CardStatus } from "@/lib/dictation/schedule";
 import { unauthorized, internalError } from "@/lib/api-errors";
@@ -13,6 +14,9 @@ const logger = createLogger("api:dictation:today");
  * 今日待复习。
  * 默认不返回待考内容本身（那就是答案），只返回阶段与逾期信息；
  * 需要预览时带 reveal=1。
+ *
+ * 已交卷但尚未人工判卷的字不在此列：它们的到期时间要等判卷才推进，
+ * 继续出题会让同一个字被反复默写。数量单独回传，便于页面提示去判卷。
  */
 export async function GET(req: Request) {
     const user = await getCurrentUser();
@@ -25,30 +29,35 @@ export async function GET(req: Request) {
         const reveal = url.searchParams.get("reveal") === "1";
         const includeFuture = url.searchParams.get("all") === "1";
 
-        const cards = await prisma.reviewCard.findMany({
-            where: {
-                userId: user.id,
-                status: { in: ["active", "mastered"] },
-                ...(kind ? { entry: { kind } } : {}),
-            },
-            include: {
-                entry: {
-                    select: {
-                        id: true,
-                        kind: true,
-                        text: true,
-                        pinyin: true,
-                        meaning: true,
+        const [cards, awaitingReview] = await Promise.all([
+            prisma.reviewCard.findMany({
+                where: {
+                    userId: user.id,
+                    status: { in: ["active", "mastered"] },
+                    ...(kind ? { entry: { kind } } : {}),
+                },
+                include: {
+                    entry: {
+                        select: {
+                            id: true,
+                            kind: true,
+                            text: true,
+                            pinyin: true,
+                            meaning: true,
+                        },
                     },
                 },
-            },
-            orderBy: [{ dueAt: "asc" }],
-        });
+                orderBy: [{ dueAt: "asc" }],
+            }),
+            findAwaitingReviewCardIds(user.id),
+        ]);
+
+        const available = cards.filter((c) => !awaitingReview.has(c.id));
 
         // 调试模式：admin 可用 debugNow 模拟任意一天的复习计划
         const now = resolveDebugNow(req, user.role) ?? new Date();
-        const due = cards.filter((c) => isDue(c.dueAt, now));
-        const list = includeFuture ? cards : due;
+        const due = available.filter((c) => isDue(c.dueAt, now));
+        const list = includeFuture ? available : due;
 
         const byKind: Record<string, number> = {
             chinese_char: 0,
@@ -61,6 +70,7 @@ export async function GET(req: Request) {
 
         return NextResponse.json({
             totalDue: due.length,
+            awaitingReviewCount: cards.length - available.length,
             byKind,
             items: list.map((c) => ({
                 cardId: c.id,
