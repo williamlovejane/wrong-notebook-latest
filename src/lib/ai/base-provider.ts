@@ -159,7 +159,7 @@ export abstract class BaseAIProvider implements AIService {
         logger.info({ provider: this.providerName, imageSize: imageBase64.length }, 'Image With Prompt Request');
 
         try {
-            const text = await this.complete({ task: 'analyze', system: '', user: prompt, image: { base64: imageBase64, mimeType } });
+            const text = await this.run({ task: 'analyze', system: '', user: prompt, image: { base64: imageBase64, mimeType } });
             if (!text) throw new Error("Empty response from AI");
             return text;
         } catch (error) {

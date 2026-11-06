@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/dictation/auth";
 import { getAIService } from "@/lib/ai";
+import { consumeAiQuota } from "@/lib/ai-quota";
 import { unauthorized, badRequest, notFound, internalError } from "@/lib/api-errors";
 import { createLogger } from "@/lib/logger";
 
@@ -92,7 +93,11 @@ export async function POST(
         ].join("\n");
 
         const base64 = image.replace(/^data:image\/\w+;base64,/, "");
-        const text = await getAIService().analyzeImageWithPrompt(base64, "image/jpeg", prompt);
+        // 与上游其它 AI 路由一致：先校验数据授权与额度，再向服务商发送数据
+        const limited = await consumeAiQuota(user, "grade");
+        if (limited) return limited;
+        const ai = await getAIService({ userId: user.id, kind: "grade" });
+        const text = await ai.analyzeImageWithPrompt(base64, "image/jpeg", prompt);
         const parsed = parseGradeResponse(text);
         if (parsed.length === 0) {
             logger.warn({ text: text.slice(0, 300) }, "整卷判分返回格式异常");
