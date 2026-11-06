@@ -31,6 +31,8 @@ NEXTAUTH_URL=http://localhost:3000
 
 When the app is accessed from other devices, set `NEXTAUTH_URL` to the full URL actually used to open it.
 
+To send no anonymous statistics at all (restricted networks or demo sites), add `TELEMETRY_DISABLED=true` to `.env`; it forces local recording, error reporting and forwarding off. Otherwise adjust them under "Settings → User Management → Privacy & telemetry"; see [Settings and Users](Settings-and-Users-en#privacy-and-telemetry).
+
 Create `docker-compose.yml`:
 
 ```yaml
@@ -146,4 +148,4 @@ xattr -cr /Applications/WrongNotebook.app
 codesign --force --deep --sign - /Applications/WrongNotebook.app
 ```
 
-The Android standalone edition runs the server on the phone with no separate deployment and needs a 64-bit ARM device on Android 8.0 or later; the Android client edition is only a shell that connects to a server, which must first be deployed with one of the methods above. See [INSTALL_PACKAGES.md](https://github.com/margrop/wrong-notebook/blob/main/doc/INSTALL_PACKAGES.md) for details.
+The Android standalone edition runs the server on the phone with no separate deployment and needs a 64-bit ARM device on Android 8.0 or later; both Android editions need Android System WebView 111 or later; the Android client edition is only a shell that connects to a server, which must first be deployed with one of the methods above. See [INSTALL_PACKAGES.md](https://github.com/margrop/wrong-notebook/blob/main/doc/INSTALL_PACKAGES.md) for details.

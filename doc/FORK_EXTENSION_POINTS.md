@@ -175,3 +175,59 @@ registerQuestionSaveHook(myHook);
 
 - 钩子在事务内运行，执行时间直接拉长事务持有时间；**不要在钩子里调用外部网络或执行耗时计算**，只做同库的数据写入。
 - 进程内按注册顺序依次执行；`clearQuestionSaveHooksForTest` 仅供测试清空注册表。
+
+## AI 账户：额度、AI 配置与用量
+
+文件：`src/lib/ai/account.ts`（接口）、`src/lib/ai/account-default.ts`（默认实现）
+
+AI 调用前的额度判断、每个用户使用的 AI 配置、每次补全的用量记录，以及用户删除后的清理，都集中在 `AiAccountProvider` 接口中。默认实现即上游行为：按「每人每日 AI 次数」限额、全站共用一套 AI 配置、用量写入本地 `AiCompletion` 表。
+
+| 方法 | 调用时机 | 默认实现 |
+| --- | --- | --- |
+| `authorize(scope)` | `consumeAiQuota` 中，AI 数据授权检查通过之后 | 每日次数上限，管理员不受限制 |
+| `resolveConfig(scope)` | 每次 `getAIService({ userId, kind })` | 返回 `null`，使用全站配置 |
+| `record(scope, provider, event)` | 每次补全结束（成功或失败） | 写入 `AiCompletion` |
+| `onUserDeleted(userId)` | 自助注销、管理员删除用户、系统初始化删除用户成功之后 | 无操作 |
+
+约定：
+
+- AI 数据授权检查在 `authorize` 之前完成，扩展不能跳过。
+- `authorize` 返回 `null` 放行；拒绝时返回 `{ code, details }`，接口返回 429，前端统一提示额度用完。`code` 为 `AI_DAILY_LIMIT_EXCEEDED`（每日次数上限，提示明天再试）或 `AI_QUOTA_INSUFFICIENT`（额度不足，提示补充额度）。`authorize` 抛错时按放行处理并记日志。
+- `resolveConfig` 返回的配置只支持 OpenAI 兼容接口：`{ provider, baseUrl, apiKey, model }`，其中 `provider` 是记入用量的渠道名。同一地址和模型的调用共用并发名额，与 API Key 无关。
+- `record`、`onUserDeleted` 出错只记日志，不影响业务。
+- 需要保存用户在外部服务的账号（对应关系、凭据）时，使用 `ExternalAccount` 表：按 `userId + provider` 唯一，`secret` 由扩展自行加密。该表不与 User 建外键、不进入备份，用户删除后记录仍在，供 `onUserDeleted` 读取并清理，清理完成后由扩展删除。
+- `scope.kind` 为触发调用的操作（与 `AiUsage.kind` 相同），后台的掌握概率评估为 `mastery`，不经过 `authorize`。
+
+### 替换实现
+
+实现放在 `src/extensions/local/`（已加入 `.gitignore`，上传前检查也会拒绝该目录），模块导出名为 `aiAccountProvider` 的对象。可以复用默认实现，只替换需要改变的方法：
+
+```ts
+// src/extensions/local/ai-account.ts（不入库）
+import type { AiAccountProvider } from "@/lib/ai/account";
+import { aiAccountProvider as base } from "@/lib/ai/account-default";
+
+export const aiAccountProvider: AiAccountProvider = {
+    ...base,
+    resolveConfig: async (scope) => ({
+        provider: "gateway",
+        baseUrl: "http://gateway.internal/v1",
+        apiKey: await lookupUserKey(scope.userId),
+        model: "gpt-4o-mini",
+    }),
+};
+```
+
+构建（包括 `npm run dev`）时用环境变量指定实现文件，路径相对项目根目录：
+
+```bash
+AI_ACCOUNT_EXTENSION=src/extensions/local/ai-account.ts npm run build
+```
+
+Docker 镜像构建时传入同名构建参数，实现文件需在构建上下文中（`src/extensions/local/` 未被 `.dockerignore` 排除）。构建完成后 standalone 目录会清理掉源码，实现的源文件不会进入最终镜像：
+
+```bash
+docker build --build-arg AI_ACCOUNT_EXTENSION=src/extensions/local/ai-account.ts -t wrong-notebook-custom .
+```
+
+`next.config.ts` 把模块 `@wrong-notebook/ai-account` 指向该文件，未设置时指向默认实现；替换只在构建时生效，修改后需重新构建。Vitest 始终使用默认实现。

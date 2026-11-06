@@ -8,8 +8,13 @@ import { AnthropicProvider } from "./anthropic-provider";
 import { MiniMaxCodeProvider } from "./minimax-code-provider";
 import { isVendorProvider, resolveVendorConfig, VENDOR_PRESETS } from "./vendor-presets";
 import { limitModelConcurrency } from "./concurrency";
+import type { CompletionObserver } from "./completion";
+import type { AiCallScope } from "./usage";
+import type { AiProviderOverride } from "./account";
+import { getAiAccountProvider } from "./account-provider";
 
 export * from "./types";
+export type { AiCallKind, AiCallScope } from "./usage";
 
 import { getAppConfig, getActiveOpenAIConfig } from "../config";
 import { createLogger } from "../logger";
@@ -21,13 +26,39 @@ function concurrencyKey(provider: string, baseUrl: string | undefined, model: st
     return [provider, baseUrl || '', model || ''].join('|');
 }
 
-/** 当前配置的 AI 服务，所有调用受同一模型的并发上限约束 */
-export function getAIService(): AIService {
-    const { service, key } = createAIService();
+/** 能报告每次补全用量的 AI 服务 */
+type ObservableAIService = AIService & { observeCompletions(observer: CompletionObserver | undefined): void };
+
+/**
+ * 为某个用户的某项操作取得 AI 服务：AI 账户实现可为该用户指定单独的 AI 配置（默认使用全站配置），
+ * 每次补全的 token 用量交给 AI 账户实现记录；所有调用受同一模型的并发上限约束。
+ */
+export async function getAIService(scope: AiCallScope): Promise<AIService> {
+    const account = getAiAccountProvider();
+    const override = await account.resolveConfig(scope);
+    const { service, key, provider } = override ? createOverrideService(override) : createAIService();
+    service.observeCompletions((event) => account.record(scope, provider, event).catch((error: unknown) => {
+        logger.error({ error, userId: scope.userId, kind: scope.kind }, 'AI account failed to record completion');
+    }));
     return limitModelConcurrency(service, key);
 }
 
-function createAIService(): { service: AIService; key: string } {
+/** 用户单独指定的 OpenAI 兼容配置；并发分组不含 API Key，不同用户共用同一模型的名额 */
+function createOverrideService(override: AiProviderOverride): { service: ObservableAIService; key: string; provider: string } {
+    const { provider, baseUrl, apiKey, model } = override;
+    return {
+        service: new OpenAIProvider({ apiKey, baseUrl, model }),
+        key: concurrencyKey(provider, baseUrl, model),
+        provider,
+    };
+}
+
+function createAIService(): { service: ObservableAIService; key: string; provider: string } {
+    const provider = getAppConfig().aiProvider || 'unknown';
+    return { ...createProviderService(), provider };
+}
+
+function createProviderService(): { service: ObservableAIService; key: string } {
     // Always get fresh config
     const config = getAppConfig();
     const provider = config.aiProvider;

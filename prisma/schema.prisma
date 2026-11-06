@@ -42,6 +42,7 @@ model User {
 
   examPapers ExamPaper[]
   aiUsages   AiUsage[]
+  aiCompletions AiCompletion[]
   paperGroups PaperGroup[]
   dictationEntries DictationEntry[]
   reviewCards      ReviewCard[]
@@ -294,6 +295,43 @@ model AiUsage {
   @@index([userId, createdAt])
 }
 
+// 每次 AI 补全的 token 用量（含后台自动的掌握概率评估）；一次用户操作可能对应多次补全
+model AiCompletion {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind         String   // 触发补全的操作，同 AiUsage.kind，另有 mastery
+  task         String   // 补全任务，如 analyze、grading、tag-suggest
+  provider     String   // 配置的 AI 渠道，如 openai、anthropic、deepseek
+  model        String?
+  inputTokens  Int?
+  outputTokens Int?
+  requestId    String?  // 服务商或网关返回的请求 ID
+  durationMs   Int
+  status       String   // succeeded | failed
+  errorCode    String?
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
+// 用户在外部服务的账号，供扩展（如 AI 账户实现）保存对应关系与凭据；secret 由扩展自行加密。
+// 不与 User 建外键：用户删除后扩展仍需读取该记录清理外部账号，清理完成后由扩展删除。不进入备份。
+model ExternalAccount {
+  id         String   @id @default(cuid())
+  userId     String
+  provider   String   // 外部服务标识，由扩展定义
+  externalId String?  // 外部服务中的账号 ID
+  status     String   @default("pending") // 由扩展定义，如 pending、active、closed
+  secret     String?  // 扩展加密后的凭据
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, provider])
+  @@index([provider, status])
+}
+
 // ============================================================
 // 默写复习（生字 / 英语单词 / 英语句子）
 // ============================================================
@@ -536,4 +574,41 @@ model ImportBatch {
 
   @@unique([userId, clientRequestId])
   @@index([userId, status])
+}
+
+/// 匿名遥测事件：同时作为本地记录与外发待发队列（见 doc/TELEMETRY_DESIGN.md §2.2）。
+/// 不含用户或实例标识；local=false 的记录只为外发而存，发出后删除
+model TelemetryEvent {
+  id          String    @id @default(cuid())
+  name        String    // 事件名（telemetry/schema.ts 白名单）
+  payload     String?   // JSON，只有布尔与枚举值
+  version     String
+  createdAt   DateTime  @default(now())
+  forwardedAt DateTime? // 外发成功的时间；null 表示待发
+  local       Boolean   // 写入时本地记录是否开启
+
+  @@index([createdAt])
+  @@index([forwardedAt, createdAt])
+  @@index([name, createdAt])
+}
+
+/// 匿名错误回报：message、stack、path、userAgent 只在本地记录开启时保存，永不外发
+model TelemetryError {
+  id          String    @id @default(cuid())
+  kind        String    // client | boundary | server
+  scope       String
+  name        String
+  fingerprint String    // 16 位十六进制
+  message     String?
+  stack       String?
+  path        String?
+  userAgent   String?
+  version     String
+  createdAt   DateTime  @default(now())
+  forwardedAt DateTime?
+  local       Boolean
+
+  @@index([createdAt])
+  @@index([forwardedAt, createdAt])
+  @@index([fingerprint, createdAt])
 }

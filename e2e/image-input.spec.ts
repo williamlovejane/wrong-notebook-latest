@@ -201,6 +201,54 @@ test.describe('手机拍照、相册与文件入口', () => {
         await chooser.setFiles(fixture('orientation-6.jpg'));
         await expect(page.getByRole('heading', { name: /裁剪|Crop/ })).toBeVisible();
     });
+
+    test('[E2E-I10] 手机上裁剪框居中且不依赖 CSS translate，确认与取消按钮都在屏幕内', async ({ page, scenario }) => {
+        await scenario.db.user.update({ where: { id: scenario.user.id }, data: { confirmBeforeImport: true } });
+        await scenario.login(page);
+        await page.goto('/');
+        await page.locator('[data-testid="file-input"]').setInputFiles(fixture('math_test.png'));
+        const cropper = page.getByRole('dialog');
+        await expect(page.getByRole('heading', { name: /裁剪|Crop/ })).toBeVisible({ timeout: 30000 });
+        // 等进入动画结束再量位置
+        await expect.poll(() => cropper.evaluate((el) => el.getAnimations().length)).toBe(0);
+        // 旧版安卓 WebView 不支持 translate 属性，居中不能靠它
+        expect(await cropper.evaluate((el) => getComputedStyle(el).translate)).toBe('none');
+        const viewport = page.viewportSize()!;
+        const box = (await cropper.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+        expect(Math.abs(box.x + box.width / 2 - viewport.width / 2)).toBeLessThanOrEqual(1);
+        expect(Math.abs(box.y + box.height / 2 - viewport.height / 2)).toBeLessThanOrEqual(1);
+        for (const name of ['取消', '确认']) {
+            await expect(cropper.getByRole('button', { name, exact: true })).toBeInViewport({ ratio: 1 });
+        }
+    });
+});
+
+test.describe('旧版安卓系统 WebView', () => {
+    test.use({
+        viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
+        userAgent: 'Mozilla/5.0 (Linux; Android 13; RMX3031 Build/TP1A.220905.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/103.0.5060.129 Mobile Safari/537.36 WrongNotebookAndroid/2026.11.4 (phone)',
+    });
+
+    test('[E2E-I11] 内核低于 111 时提示升级 WebView，可关闭；页面带有 translate 属性的 transform 回退', async ({ page, scenario }) => {
+        await scenario.login(page);
+        await page.goto('/');
+        const notice = page.getByTestId('outdated-browser-notice');
+        await expect(notice).toContainText('系统 WebView 版本过旧（103）');
+        await expect(notice).toContainText('Android System WebView');
+        // 不支持 translate 属性的内核改用 transform：确认这条规则经过构建后仍在样式表中
+        const hasFallback = await page.evaluate(() => [...document.styleSheets].some((sheet) => {
+            try {
+                return [...sheet.cssRules].some((rule) => rule instanceof CSSSupportsRule && rule.conditionText.includes('not (translate'));
+            } catch {
+                return false;
+            }
+        }));
+        expect(hasFallback).toBe(true);
+        await notice.getByRole('button', { name: '关闭' }).click();
+        await expect(notice).toHaveCount(0);
+    });
 });
 
 test('[E2E-I09] 一道题分在两张纸上：第一段暂存后选第二张，两段缩放到同宽后上下拼成一张图识别', async ({ page, scenario }, testInfo) => {

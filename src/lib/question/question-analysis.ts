@@ -2,6 +2,7 @@
  * 识别一张题目图片：按用户年级规则与错题本的候选知识点调用 AI，并按年级规则确定最终年级。
  * /api/analyze 与识别导入任务共用。
  */
+import { AI_REJECTION_CODES } from "@/lib/ai-limit-message";
 import { getAIService } from "@/lib/ai";
 import type { ParsedQuestion } from "@/lib/ai";
 import { normalizeSubject, ParsedQuestionSchema } from "@/lib/ai/schema";
@@ -14,6 +15,7 @@ import { resolveNotebookScope, SUBJECT_DISPLAY_NAMES } from "@/lib/notebook-scop
 import { prisma } from "@/lib/prisma";
 import { normalizeMistakeStatus } from "@/lib/question/mistake-status";
 import { getFixedQuestionGrade, getQuestionGradeContext, resolveQuestionGrade } from "@/lib/question/question-grade";
+import { trackAnalyze } from "@/lib/telemetry/events";
 import type { QuestionGradeProfile } from "@/lib/question/question-grade";
 
 const logger = createLogger('question-analysis');
@@ -94,10 +96,10 @@ export async function analyzeQuestionForUser(input: QuestionAnalysisInput): Prom
     }
 
     logger.info({ userGrade, userGradeSemester, subject: subjectChinese, hasReferenceText: !!input.referenceText?.trim() }, 'Calling AI service for image analysis');
-    const aiService = getAIService();
+    const aiService = await getAIService({ userId: input.userId, kind: 'analyze' });
     const analysisResult = await trackBackgroundTask(
         { userId: input.userId, kind: 'analyze', subject: notebookName, link: input.link ?? null },
-        () => aiService.analyzeImage(base64, mimeType, input.language, userGrade, subjectChinese, userGradeSemester, candidateTags, input.referenceText ?? null)
+        () => trackAnalyze(() => aiService.analyzeImage(base64, mimeType, input.language, userGrade, subjectChinese, userGradeSemester, candidateTags, input.referenceText ?? null))
     );
 
     logger.debug({
@@ -120,7 +122,7 @@ export async function analyzeQuestionForUser(input: QuestionAnalysisInput): Prom
 const PASSTHROUGH_AI_ERRORS = new Set([
     'AI_CONNECTION_FAILED', 'AI_RESPONSE_ERROR', 'AI_TIMEOUT_ERROR', 'AI_QUOTA_EXCEEDED', 'AI_PERMISSION_DENIED',
     'AI_NOT_FOUND', 'AI_SERVICE_UNAVAILABLE', 'AI_UNKNOWN_ERROR', 'AI_OUTPUT_TRUNCATED', 'AI_IMAGE_NOT_SUPPORTED',
-    'AI_DAILY_LIMIT_EXCEEDED', 'AI_CONSENT_REQUIRED',
+    ...AI_REJECTION_CODES,
 ]);
 
 /** 把识别异常映射为前端可翻译的错误码 */
@@ -165,7 +167,7 @@ export async function analyzeQuestionTextForUser(input: QuestionTextAnalysisInpu
     const fixedGrade = user ? getFixedQuestionGrade(user, getAppTimeZone()) : null;
     const result = await trackBackgroundTask(
         { userId: input.userId, kind: 'reanswer', subject: notebookName ?? describeQuestion({ questionText: input.questionText }), link: input.link ?? null },
-        () => getAIService().reanswerQuestion(input.questionText, input.language, notebookName, undefined, fixedGrade ?? undefined, candidateTags),
+        async () => (await getAIService({ userId: input.userId, kind: 'reanswer' })).reanswerQuestion(input.questionText, input.language, notebookName, undefined, fixedGrade ?? undefined, candidateTags),
     );
     const parsed: ParsedQuestion = {
         questionText: input.questionText,
@@ -190,6 +192,6 @@ export async function analyzeQuestionTextForUser(input: QuestionTextAnalysisInpu
 export async function splitQuestionsForUser(userId: string, input: QuestionSplitInput, link?: string | null): Promise<QuestionSplitResult> {
     return trackBackgroundTask(
         { userId, kind: 'split', subject: null, link: link ?? null },
-        () => getAIService().splitQuestions(input),
+        async () => (await getAIService({ userId, kind: 'split' })).splitQuestions(input),
     );
 }

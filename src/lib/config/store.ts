@@ -5,18 +5,21 @@ import path from 'path';
 import { createLogger } from '../logger';
 import { DEFAULT_TIME_ZONE, isValidTimeZone } from '../date-time';
 import type { AppConfig } from './types';
-import { DEFAULT_CONFIG, mergeTtsConfig, mergeVendorConfigs } from './defaults';
+import { DEFAULT_CONFIG, mergeTelemetryConfig, mergeTtsConfig, mergeVendorConfigs } from './defaults';
 import { isLegacyOpenAIConfig, migrateOpenAIConfig } from './legacy';
 
 const logger = createLogger('config');
 
-// 安装包（npm、桌面端、飞牛OS）通过 CONFIG_DIR 把配置放到用户数据目录，默认仍为 ./config
-const CONFIG_FILE_PATH = path.join(process.env.CONFIG_DIR || path.join(process.cwd(), 'config'), 'app-config.json');
+// 安装包（npm、桌面端、飞牛OS）通过 CONFIG_DIR 把配置放到用户数据目录，默认仍为 ./config；
+// 每次调用时计算，与 initial-admin、setup-token 一致
+function configFilePath(): string {
+    return path.join(process.env.CONFIG_DIR || path.join(process.cwd(), 'config'), 'app-config.json');
+}
 
 /** 读取配置文件；文件不存在时返回 null（直接读取并处理 ENOENT，避免先判断再读取之间文件被改动） */
 function readConfigFile(): string | null {
     try {
-        return fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+        return fs.readFileSync(configFilePath(), 'utf-8');
     } catch (error) {
         if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
         throw error;
@@ -25,9 +28,10 @@ function readConfigFile(): string | null {
 
 /** 先写临时文件再改名替换，避免其他请求读到写了一半的配置 */
 function writeConfigFile(config: unknown): void {
-    const tmp = `${CONFIG_FILE_PATH}.${process.pid}.tmp`;
+    const file = configFilePath();
+    const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(config, null, 2));
-    fs.renameSync(tmp, CONFIG_FILE_PATH);
+    fs.renameSync(tmp, file);
 }
 
 export function getAppConfig(): AppConfig {
@@ -73,6 +77,8 @@ export function getAppConfig(): AppConfig {
                 prompts: { ...DEFAULT_CONFIG.prompts, ...userConfig.prompts },
                 timeouts: { ...DEFAULT_CONFIG.timeouts, ...userConfig.timeouts },
                 tts: mergeTtsConfig(DEFAULT_CONFIG.tts, userConfig.tts),
+                eula: { ...userConfig.eula },
+                telemetry: mergeTelemetryConfig(undefined, userConfig.telemetry),
             };
         } catch (error) {
             logger.error({ error }, 'Failed to read config file');
@@ -103,6 +109,8 @@ export function updateAppConfig(newConfig: Partial<AppConfig>) {
         prompts: { ...currentConfig.prompts, ...newConfig.prompts },
         timeouts: { ...currentConfig.timeouts, ...newConfig.timeouts },
         tts: mergeTtsConfig(currentConfig.tts, newConfig.tts),
+        eula: { ...currentConfig.eula, ...newConfig.eula },
+        telemetry: mergeTelemetryConfig(currentConfig.telemetry, newConfig.telemetry),
     };
 
     try {

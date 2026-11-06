@@ -13,21 +13,24 @@ const mocks = vi.hoisted(() => ({
     userFindUnique: vi.fn(),
 }));
 
-vi.mock('openai', () => ({
-    default: class MockOpenAI {
-        chat = { completions: { create: mocks.create } };
-        constructor(options: { apiKey?: string; baseURL?: string }) {
-            mocks.openaiOptions.push(options);
-        }
-    },
-}));
+vi.mock('openai', async () => {
+    const { sdkMethod } = await import('../../helpers/sdk-response');
+    return {
+        default: class MockOpenAI {
+            chat = { completions: { create: sdkMethod(mocks.create) } };
+            constructor(options: { apiKey?: string; baseURL?: string }) {
+                mocks.openaiOptions.push(options);
+            }
+        },
+    };
+});
 vi.mock('@/lib/logger', () => ({
     createLogger: vi.fn(() => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), box: vi.fn(), divider: vi.fn() })),
 }));
 vi.mock('@/lib/config', () => ({ getAppConfig: mocks.getAppConfig, getActiveOpenAIConfig: vi.fn() }));
 vi.mock('next-auth', () => ({ getServerSession: mocks.getServerSession }));
 vi.mock('@/lib/auth', () => ({ authOptions: {} }));
-vi.mock('@/lib/prisma', () => ({ prisma: { user: { findUnique: mocks.userFindUnique } } }));
+vi.mock('@/lib/prisma', () => ({ prisma: { user: { findUnique: mocks.userFindUnique }, aiCompletion: { create: vi.fn().mockResolvedValue({}) } } }));
 vi.stubGlobal('fetch', mocks.fetch);
 
 import { getAIService } from '@/lib/ai';
@@ -96,7 +99,7 @@ describe.each(VENDOR_PROVIDER_IDS)('%s 渠道', (id) => {
         mocks.getAppConfig.mockReturnValue({ aiProvider: id, [id]: { apiKey: 'vendor-key' } });
         mocks.create.mockResolvedValue({ choices: [{ message: { content: '{"tags": ["加法"], "difficultyStars": 1}' }, finish_reason: 'stop' }] });
 
-        const service = getAIService();
+        const service = await getAIService({ userId: 'u1', kind: 'retag' });
         await service.suggestKnowledgeTags({ questionText: '1+1=?', subject: '数学', allowedTags: ['加法'] });
 
         expect(service.constructor.name).toBe('OpenAIProvider');
@@ -104,9 +107,9 @@ describe.each(VENDOR_PROVIDER_IDS)('%s 渠道', (id) => {
         expect(mocks.create.mock.calls[0][0].model).toBe(EXPECTED[id].model);
     });
 
-    it('未填写 API Key 时报认证错误', () => {
+    it('未填写 API Key 时报认证错误', async () => {
         mocks.getAppConfig.mockReturnValue({ aiProvider: id, [id]: {} });
-        expect(() => getAIService()).toThrow('AI_AUTH_ERROR');
+        await expect(getAIService({ userId: 'u1', kind: 'retag' })).rejects.toThrow('AI_AUTH_ERROR');
     });
 
     it('模型列表默认请求官方地址', async () => {

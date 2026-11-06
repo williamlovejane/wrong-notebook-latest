@@ -32,6 +32,8 @@ export const ErrorCode = {
 
     // 请求过多 (429)
     AI_DAILY_LIMIT_EXCEEDED: 'AI_DAILY_LIMIT_EXCEEDED',
+    /** AI 账户实现判定额度不足（如按量计费的余额用完） */
+    AI_QUOTA_INSUFFICIENT: 'AI_QUOTA_INSUFFICIENT',
     TOO_MANY_REQUESTS: 'TOO_MANY_REQUESTS',
 
     // 冲突 (409)
@@ -39,6 +41,8 @@ export const ErrorCode = {
     ALREADY_EXISTS: 'ALREADY_EXISTS',
     /** 同一目标的后台任务正在运行（按 target 防重复），body 中附带原任务 */
     TASK_ALREADY_RUNNING: 'TASK_ALREADY_RUNNING',
+    /** 使用协议已升级，管理员重新同意前不能执行管理写操作 */
+    EULA_PENDING: 'EULA_PENDING',
 
     // 服务器错误 (500)
     INTERNAL_ERROR: 'INTERNAL_ERROR',

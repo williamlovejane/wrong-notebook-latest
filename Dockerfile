@@ -54,6 +54,8 @@ ENV NODE_OPTIONS="--max-old-space-size=2560"
 # Learn more here: https://nextjs.org/telemetry
 # Uncomment the following line in case you want to disable telemetry during the build.
 ENV NEXT_TELEMETRY_DISABLED=1
+# 构建时替换 AI 账户实现（相对项目根目录的文件路径，见 doc/FORK_EXTENSION_POINTS.md），留空使用默认实现
+ARG AI_ACCOUNT_EXTENSION=
 
 # 清理 standalone 中被文件追踪带入的源码与重复的 Prisma 副本（原版用 cache mount，本机 Docker 未启 BuildKit，去掉）
 RUN npm run build \
@@ -77,6 +79,8 @@ ENV HOSTNAME="0.0.0.0"
 # Point to the persistent data location
 ENV DATABASE_URL="file:/app/data/dev.db"
 ENV AUTH_TRUST_HOST=true
+# 匿名遥测的部署形态
+ENV WN_PLATFORM=docker
 
 # Install dependencies, create user and persistent data directory before revision args so this layer stays cached
 RUN apk add --no-cache su-exec openssl \

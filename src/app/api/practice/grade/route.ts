@@ -9,6 +9,7 @@ import { createLogger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { consumeAiQuota } from "@/lib/ai-quota";
 import { withRecoverableResponse } from "@/lib/recoverable-response";
+import { trackPracticeGrading } from "@/lib/telemetry/events";
 
 const logger = createLogger('api:practice:grade');
 
@@ -43,17 +44,17 @@ async function handlePost(req: Request, { user }: AuthenticatedContext) {
         const limited = await consumeAiQuota(user, 'grade');
         if (limited) return limited;
 
-        const result = await getAIService().gradeAnswer({
+        const result = await trackPracticeGrading(async () => (await getAIService({ userId: user.id, kind: 'grade' })).gradeAnswer({
             questionText: practice.questionText,
             answerText: practice.answerText,
             analysis: practice.analysis,
             userAnswer,
             language,
-        });
+        }));
         return NextResponse.json(result);
     } catch (error) {
         logger.error({ error }, 'Error grading answer');
-        return internalError(error instanceof Error ? error.message : "Failed to grade answer");
+        return internalError(error instanceof Error ? error.message : "Failed to grade answer", { error, scope: "api:practice" });
     }
 }
 

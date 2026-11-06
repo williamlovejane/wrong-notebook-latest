@@ -10,6 +10,7 @@ import { resolveNotebookScope, SUBJECT_DISPLAY_NAMES } from "@/lib/notebook-scop
 import { consumeAiQuota } from "@/lib/ai-quota";
 import { withRecoverableResponse } from "@/lib/recoverable-response";
 import { reanswerSchema } from "@/lib/schemas/error-items";
+import { trackReanswer } from "@/lib/telemetry/events";
 
 const logger = createLogger('api:error-items:reanswer');
 
@@ -73,8 +74,8 @@ async function handlePost(
             return limited;
         }
 
-        const result = await runReservedTask(handle, () =>
-            getAIService().reanswerQuestion(questionText, language, subject, image, item.gradeSemester)
+        const result = await runReservedTask(handle, async () =>
+            trackReanswer(async () => (await getAIService({ userId: user.id, kind: 'reanswer' })).reanswerQuestion(questionText, language, subject, image, item.gradeSemester))
         );
         if (!result.answerText.trim() && !result.analysis.trim()) {
             return badRequest("EMPTY_ANSWER");

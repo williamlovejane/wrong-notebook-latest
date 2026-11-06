@@ -31,6 +31,8 @@ NEXTAUTH_URL=http://localhost:3000
 
 从其他设备访问时，把 `NEXTAUTH_URL` 改为实际访问应用的完整 URL。
 
+内网合规或演示环境不希望发送任何匿名统计时，在 `.env` 中加入 `TELEMETRY_DISABLED=true`，强制关闭本地记录、错误回报与外发；也可以保留开启，在“设置 → 用户管理 → 隐私与遥测”中按需调整，见[设置与用户管理](Settings-and-Users#隐私与遥测)。
+
 新建 `docker-compose.yml`：
 
 ```yaml
@@ -146,4 +148,4 @@ xattr -cr /Applications/WrongNotebook.app
 codesign --force --deep --sign - /Applications/WrongNotebook.app
 ```
 
-安卓单机版在手机上运行服务端，无需另行部署，需要 Android 8.0 及以上的 64 位 ARM 设备；安卓客户端版只是连接服务器的外壳，需要先用上面任一方式部署服务端。详细说明见 [INSTALL_PACKAGES.md](https://github.com/margrop/wrong-notebook/blob/main/doc/INSTALL_PACKAGES.md)。
+安卓单机版在手机上运行服务端，无需另行部署，需要 Android 8.0 及以上的 64 位 ARM 设备；两个安卓版本都需要 Android System WebView 111 及以上；安卓客户端版只是连接服务器的外壳，需要先用上面任一方式部署服务端。详细说明见 [INSTALL_PACKAGES.md](https://github.com/margrop/wrong-notebook/blob/main/doc/INSTALL_PACKAGES.md)。
