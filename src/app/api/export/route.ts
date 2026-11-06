@@ -112,6 +112,13 @@ export async function GET(req: Request) {
             orderBy: { createdAt: 'asc' },
         });
 
+        // 整轮手写听写的提交记录：含判分结果、书写轨迹、成品图与 GIF 动图，供当天回看与人工复核
+        const dictationSubmissions = await prisma.dictationSubmission.findMany({
+            where: userFilter,
+            include: { items: { orderBy: { position: 'asc' } } },
+            orderBy: { createdAt: 'asc' },
+        });
+
         // 与动画讲解文字一致的云端语音（MP3），导入后无需重新合成
         const ttsSpeeches = await exportSpeeches(errorItems.flatMap((item) => [
             ...(item.svgAnimation ? [{ language: 'zh' as const, svg: item.svgAnimation }] : []),
@@ -167,6 +174,7 @@ export async function GET(req: Request) {
             importTasks,
             importBatches,
             extensions,
+            dictationSubmissions,
         } satisfies BackupFile;
 
         logger.info({
@@ -182,6 +190,7 @@ export async function GET(req: Request) {
             importTasksCount: importTasks.length,
             importBatchesCount: importBatches.length,
             ttsSpeechesCount: ttsSpeeches.length,
+            dictationSubmissionsCount: dictationSubmissions.length,
         }, 'Data export completed');
 
         const jsonString = JSON.stringify(exportData, null, 2);

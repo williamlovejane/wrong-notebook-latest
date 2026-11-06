@@ -15,7 +15,7 @@ import {
     DEBUG_NOW_STORAGE_KEY,
     parseDebugNow,
 } from "@/lib/dictation/debug-time";
-import { Loader2, Plus, Trash2, Play, BookOpen, Volume2, Languages, FlaskConical, PenLine, Printer } from "lucide-react";
+import { Loader2, Plus, Trash2, Play, BookOpen, Volume2, Languages, FlaskConical, PenLine, Printer, ClipboardList } from "lucide-react";
 
 type Kind = "chinese_char" | "english_word" | "english_sentence";
 
@@ -46,6 +46,8 @@ interface Entry {
 interface TodayResponse {
     totalDue: number;
     byKind: Record<Kind, number>;
+    /** 已交卷、等待人工判卷的字数（不计入待复习） */
+    awaitingReviewCount?: number;
 }
 
 const KIND_TABS: { key: Kind; label: string; hint: string; placeholder: string }[] = [
@@ -283,11 +285,18 @@ export default function DictationPage() {
                         按遗忘曲线安排复习：答对升阶、答错回到第一阶。
                     </p>
                 </div>
-                <Link href="/yuwen">
-                    <Button variant="outline" size="sm">
-                        <BookOpen className="mr-2 h-4 w-4" /> 课内字词
-                    </Button>
-                </Link>
+                <div className="flex flex-wrap gap-2">
+                    <Link href="/dictation/submissions">
+                        <Button variant="outline" size="sm">
+                            <ClipboardList className="mr-2 h-4 w-4" /> 今日提交
+                        </Button>
+                    </Link>
+                    <Link href="/yuwen">
+                        <Button variant="outline" size="sm">
+                            <BookOpen className="mr-2 h-4 w-4" /> 课内字词
+                        </Button>
+                    </Link>
+                </div>
             </div>
 
             {error && (
@@ -376,7 +385,7 @@ export default function DictationPage() {
                                             <Button
                                                 variant="outline"
                                                 onClick={() =>
-                                                    router.push("/dictation/quiz?mode=handwrite&kind=chinese_char")
+                                                    router.push("/dictation/handwrite")
                                                 }
                                             >
                                                 <PenLine className="mr-2 h-4 w-4" /> 手写默写
@@ -393,6 +402,12 @@ export default function DictationPage() {
                                     <span className="text-sm text-muted-foreground">今天没有到期的内容</span>
                                 )}
                             </div>
+                            {(today?.awaitingReviewCount ?? 0) > 0 && (
+                                <p className="w-full text-xs text-muted-foreground">
+                                    另有 {today?.awaitingReviewCount} 个语文生字已交卷、等待人工判卷，判卷前不再出现在待复习里。
+                                    <Link href="/dictation/submissions" className="ml-1 underline">去判卷</Link>
+                                </p>
+                            )}
                         </div>
                     )}
                 </CardContent>

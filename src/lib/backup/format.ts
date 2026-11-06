@@ -8,7 +8,7 @@ import { z } from "zod";
  */
 
 /** 当前备份文件版本号 */
-export const BACKUP_VERSION = 11;
+export const BACKUP_VERSION = 12;
 
 /** 备份文件中的用户对象 */
 export interface BackupUser {
@@ -225,6 +225,53 @@ export interface BackupExtensionEntry {
     data: unknown;
 }
 
+/** 整轮手写听写提交中的单题（version 12 起导出） */
+export interface BackupDictationSubmissionItem {
+    id: string;
+    submissionId: string;
+    position: number;
+    logId: string;
+    cardId: string;
+    expected: string;
+    promptWord: string | null;
+    pinyin: string | null;
+    /** JSON：带时间戳的笔迹轨迹 */
+    pads: string;
+    /** JSON：每字成品静态图 dataURL */
+    images: string;
+    /** JSON：每字书写过程 GIF dataURL */
+    animations: string | null;
+    correct: boolean | null;
+    recognized: string | null;
+    confidence: string | null;
+    judgedBy: string | null;
+    strokeCorrect: boolean | null;
+    detail: string | null;
+    error: string | null;
+    gradedAt: string | Date | null;
+    manualCorrect: boolean | null;
+}
+
+/** 整轮手写听写提交（version 12 起导出，含书写动图与人工复核结果） */
+export interface BackupDictationSubmission {
+    id: string;
+    userId: string;
+    status: string;
+    mode: string;
+    totalCount: number;
+    skippedCount: number;
+    gradedCount: number;
+    correctCount: number;
+    judgedBy: string | null;
+    error: string | null;
+    gridImage: string | null;
+    gradingNow: string | Date | null;
+    heartbeatAt: string | Date | null;
+    createdAt: string | Date;
+    finishedAt: string | Date | null;
+    items: BackupDictationSubmissionItem[];
+}
+
 /** 备份文件的顶层结构：导出侧写出的结构 */
 export interface BackupFile {
     version: number;
@@ -247,6 +294,8 @@ export interface BackupFile {
     importBatches: unknown[];
     /** fork 扩展数据（version 7 起导出） */
     extensions: Record<string, BackupExtensionEntry>;
+    /** 整轮手写听写提交（version 12 起导出） */
+    dictationSubmissions: BackupDictationSubmission[];
 }
 
 /** 导入侧日期类型：JSON 解析后总是字符串 */
@@ -324,6 +373,8 @@ export interface ImportableBackupFile {
     importTasks?: unknown;
     importBatches?: unknown;
     extensions?: unknown;
+    /** 整轮手写听写提交（version 12 起，旧版备份没有，由导入侧逐条校验） */
+    dictationSubmissions?: unknown;
     /** 允许未知顶层字段（未来版本扩展） */
     [key: string]: unknown;
 }

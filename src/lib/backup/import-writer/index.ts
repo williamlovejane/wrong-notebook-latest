@@ -11,6 +11,7 @@ import { importPaperGroups, importErrorItems } from "./error-items";
 import { importReviewSchedules, importExamPapers } from "./exams";
 import { importPracticeRecords, syncMasteryThreshold } from "./practice";
 import { importBatchesAndTasks, importRegisteredExtensions } from "./misc";
+import { importDictationSubmissions } from "./dictation";
 
 export { createImportContext } from "./types";
 export type { ImportStats, ImportContext, ImportWriterOptions, ImportWriterResult } from "./types";
@@ -38,6 +39,8 @@ export async function importBackupData(options: ImportWriterOptions): Promise<Im
     // 8、10. 导入批次/任务与扩展数据
     await importBatchesAndTasks(ctx);
     await importRegisteredExtensions(ctx);
+    // 11. 整轮手写听写提交（含书写动图与人工复核结果）
+    await importDictationSubmissions(ctx);
 
     return { stats: ctx.stats, masteryIds: [...ctx.masteryIds] };
 }

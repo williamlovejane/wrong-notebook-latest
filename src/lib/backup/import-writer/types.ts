@@ -18,6 +18,8 @@ export interface ImportStats {
     ttsSpeechesImported: number;
     importTasksCreated: number;
     importBatchesCreated: number;
+    /** 整轮手写听写提交批次（version 12 起） */
+    dictationSubmissionsCreated: number;
     extensionsImported: Record<string, number>;
 }
 
@@ -88,6 +90,7 @@ export function createImportContext({ tx, user, importAll, normalized }: ImportW
             ttsSpeechesImported: 0,
             importTasksCreated: 0,
             importBatchesCreated: 0,
+            dictationSubmissionsCreated: 0,
             extensionsImported: {},
         },
         masteryIds: new Set<string>(),

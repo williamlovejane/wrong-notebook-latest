@@ -64,6 +64,7 @@ async function clearUserData() {
     await database.practiceRecord.deleteMany({ where: { userId: 'user-1' } });
     await database.importTask.deleteMany({ where: { userId: 'user-1' } });
     await database.importBatch.deleteMany({ where: { userId: 'user-1' } });
+    await database.dictationSubmission.deleteMany({ where: { userId: 'user-1' } });
     await database.reviewSchedule.deleteMany();
     await database.paperGroup.deleteMany({ where: { userId: 'user-1' } });
 }
@@ -86,6 +87,7 @@ beforeAll(() => {
 beforeEach(async () => {
     mocks.scheduleMasteryEvaluation.mockClear();
     // 清理所有可能残留的数据（包括系统标签），确保每个测试从干净状态开始
+    await database.dictationSubmission.deleteMany();
     await database.reviewSchedule.deleteMany();
     await database.practiceRecord.deleteMany();
     await database.examPaper.deleteMany();
@@ -185,9 +187,10 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         expect(await database.knowledgeTag.count({ where: { name: '我的句式笔记' } })).toBe(1);
     });
 
-    it('导出文件使用第 11 版格式，包含 tagSet 字段、空的 extensions 与试卷 mode', async () => {
+    it('导出文件使用第 12 版格式，包含 tagSet 字段、空的 extensions、试卷 mode 与手写提交', async () => {
         const backup = await exportBackup();
-        expect(backup.version).toBe(11);
+        expect(backup.version).toBe(12);
+        expect(backup.dictationSubmissions).toEqual([]);
         expect(backup.extensions).toEqual({});
         expect(backup.paperGroups).toContainEqual(expect.objectContaining({ id: 'group-b', key: 'b', name: 'B卷' }));
         expect(backup.systemTags).toBeDefined();
@@ -640,6 +643,115 @@ describe('数据导出后再导入（真实 SQLite）', () => {
         expect(await database.errorItem.count({ where: { userId: 'user-1' } })).toBe(itemsBefore);
         // 新增的做错记录全部来自错题本身的重复导入（既有判重规则，计入 practiceRecordsCreated），还原任务不额外追加
         expect(await database.practiceRecord.count({ where: { userId: 'user-1' } })).toBe(records + again.stats.practiceRecordsCreated);
+    });
+
+    describe('整轮手写听写提交备份（version 12）', () => {
+        const png = 'data:image/png;base64,iVBORw0KGgo=';
+        const gif = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
+        const strokes = JSON.stringify([[[{ x: 0.1, y: 0.2, t: 0 }, { x: 0.4, y: 0.5, t: 20 }]]]);
+        const detail = JSON.stringify([{ index: 1, correct: true, reason: '字形一致' }]);
+
+        async function createSubmission(status = 'completed') {
+            return database.dictationSubmission.create({
+                data: {
+                    id: 'submission-123456', userId: 'user-1', status, mode: 'handwriting',
+                    totalCount: 2, skippedCount: 1, gradedCount: 2, correctCount: 1,
+                    judgedBy: 'mixed', gridImage: png,
+                    createdAt: new Date('2026-11-01T02:00:00Z'),
+                    finishedAt: new Date('2026-11-01T02:01:00Z'),
+                    items: { create: [
+                        {
+                            position: 0, logId: 'log-aaaaaaaa', cardId: 'card-aaaaaaaa', expected: '花',
+                            promptWord: '花园', pinyin: 'huā', pads: strokes,
+                            images: JSON.stringify([png]), animations: JSON.stringify([gif]),
+                            correct: true, recognized: '花', confidence: 'high', judgedBy: 'ai', detail,
+                            gradedAt: new Date('2026-11-01T02:00:30Z'),
+                        },
+                        {
+                            position: 1, logId: 'log-bbbbbbbb', cardId: 'card-bbbbbbbb', expected: '园',
+                            promptWord: '花园', pinyin: 'yuán', pads: strokes,
+                            images: JSON.stringify([png]), animations: JSON.stringify([gif]),
+                            correct: false, recognized: '圆', confidence: 'low', judgedBy: 'manual', detail,
+                            gradedAt: new Date('2026-11-01T02:00:40Z'), manualCorrect: true,
+                        },
+                    ] },
+                },
+            });
+        }
+
+        const restoredSubmission = () => database.dictationSubmission.findFirstOrThrow({
+            where: { userId: 'user-1' },
+            include: { items: { orderBy: { position: 'asc' } } },
+        });
+
+        it('提交批次、书写动图与人工复核结果随备份往返，重复导入不重复创建', async () => {
+            await createSubmission();
+            const backup = await exportBackup();
+            expect(backup.dictationSubmissions).toHaveLength(1);
+            expect(backup.dictationSubmissions[0].items.map((item: { position: number }) => item.position)).toEqual([0, 1]);
+
+            await clearUserData();
+            const { stats } = await importBackup(backup);
+            expect(stats.dictationSubmissionsCreated).toBe(1);
+
+            const restored = await restoredSubmission();
+            expect(restored).toMatchObject({
+                status: 'completed', mode: 'handwriting', totalCount: 2, skippedCount: 1,
+                gradedCount: 2, correctCount: 1, judgedBy: 'mixed', gridImage: png,
+                createdAt: new Date('2026-11-01T02:00:00Z'),
+            });
+            expect(restored.items).toHaveLength(2);
+            expect(restored.items[0]).toMatchObject({
+                position: 0, expected: '花', promptWord: '花园', pinyin: 'huā', pads: strokes,
+                images: JSON.stringify([png]), animations: JSON.stringify([gif]),
+                correct: true, recognized: '花', confidence: 'high', judgedBy: 'ai', detail,
+            });
+            // 人工复核结论必须随备份保留，否则恢复后判定结果会被覆盖
+            expect(restored.items[1]).toMatchObject({ position: 1, manualCorrect: true, judgedBy: 'manual', correct: false });
+
+            const again = await importBackup(backup);
+            expect(again.stats.dictationSubmissionsCreated).toBe(0);
+            expect(await database.dictationSubmission.count({ where: { userId: 'user-1' } })).toBe(1);
+        });
+
+        it('旧版备份没有手写提交字段时正常导入，非法图片内容被过滤', async () => {
+            await createSubmission();
+            const backup = await exportBackup();
+            backup.dictationSubmissions[0].gridImage = 'javascript:alert(1)';
+            backup.dictationSubmissions[0].items[0].images = JSON.stringify(['javascript:alert(1)', png]);
+            await clearUserData();
+            const { stats } = await importBackup(backup);
+            expect(stats.dictationSubmissionsCreated).toBe(1);
+            const restored = await restoredSubmission();
+            expect(restored.gridImage).toBeNull();
+            expect(restored.items[0].images).toBe(JSON.stringify([png]));
+            expect(restored.items[0].animations).toBe(JSON.stringify([gif]));
+
+            const legacy = await exportBackup();
+            delete legacy.dictationSubmissions;
+            legacy.version = 11;
+            await clearUserData();
+            expect((await importBackup(legacy)).stats.dictationSubmissionsCreated).toBe(0);
+            expect(await database.errorItem.count({ where: { userId: 'user-1' } })).toBeGreaterThan(0);
+        });
+
+        it('导出时仍在判分 / 判分失败的提交统一还原为待人工审核，不会卡在判分中', async () => {
+            await createSubmission('grading');
+            const backup = await exportBackup();
+            await clearUserData();
+            await importBackup(backup);
+            const restored = await restoredSubmission();
+            expect(restored.status).toBe('awaiting_review');
+            expect(restored.error).toBeNull();
+            expect(restored.finishedAt).toBeNull();
+            // 旧版自动判卷结果不算「已判」，统计只按人工判定重算
+            expect(restored.gradedCount).toBe(1);
+            expect(restored.correctCount).toBe(1);
+            expect(restored.judgedBy).toBe('manual');
+            // 已写入的笔迹仍然可以在「今日提交」里回看并重新判定
+            expect(restored.items).toHaveLength(2);
+            expect(restored.items.map((entry: { judgedBy: string | null }) => entry.judgedBy)).toEqual(['ai', 'manual']);
+        });
     });
 
     it('旧版备份没有识别任务字段时正常导入', async () => {

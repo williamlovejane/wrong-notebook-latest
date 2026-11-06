@@ -6,7 +6,7 @@ Web export is for moving personal learning data; restoring a whole site requires
 
 | Method | Contents | Use |
 | --- | --- | --- |
-| Web JSON export (full backup) | Notebooks, system and custom tags, questions, review schedules, practice records, random exam papers, unprocessed recognition tasks and some profile data | Keeping personal data, importing supported fields |
+| Web JSON export (full backup) | Notebooks, system and custom tags, questions, review schedules, practice records, random exam papers, whole-session handwriting dictation submissions, unprocessed recognition tasks and some profile data | Keeping personal data, importing supported fields |
 | Question Exchange JSON (Export JSON) | Selected error item question content (question text, answer, analysis, knowledge points, difficulty, figures, optional original images) | Exchanging question content, cross-system import |
 | Full-site file backup | The complete SQLite database, `config/`, deployment configuration and any certificates | Disaster recovery, moving the site, preparing a rollback before upgrades |
 
@@ -31,7 +31,7 @@ System and custom tags retain their tag system and parent-child hierarchy. Ident
 
 Question figures, GeoGebra demos, Chinese and English SVG animations with their synthesized cloud voice (MP3), the latest similar question and mastery probability are all restored from the export file; SVG is sanitized again on import, and questions without a mastery probability are re-evaluated after import. Exam papers are restored together with their questions and every recorded result; questions still being generated at export time show as failed after import and can be regenerated on the exam page. Importing your own export file also restores preferences such as the question grade rule and fixed grade, review before import, the duplicate threshold, GeoGebra demos, SVG animations and the interface theme.
 
-Export files use version 11, which includes unprocessed recognition tasks (drafts awaiting review and failed tasks, with the question image or question text and the recognition result) and unfinished multi-question batches (split drafts with your adjustments, batches whose split failed, and started batches with questions not yet imported); saved tasks and fully imported batches are not exported. On import, review drafts and split drafts stay as they were; all other tasks, including those still recognizing or saving at export time, show as failed, and batches that were still splitting show as split failed, so you can retry them when needed. Importing never calls the AI. Tasks of a batch stay in their batch after import, and importing the same file again creates nothing new. Older backups without these fields import as before.
+Export files currently use version 12. Versions 5 and 6 added unprocessed recognition tasks (drafts awaiting review and failed tasks, with the question image or question text and the recognition result) and unfinished multi-question batches (split drafts with your adjustments, batches whose split failed, and started batches with questions not yet imported); saved tasks and fully imported batches are not exported. On import, review drafts and split drafts stay as they were; all other tasks, including those still recognizing or saving at export time, show as failed, and batches that were still splitting show as split failed, so you can retry them when needed. Importing never calls the AI. Tasks of a batch stay in their batch after import, and importing the same file again creates nothing new. Older backups without these fields import as before.
 
 Version 7 adds an `extensions` namespace for fork projects to store private extension data (such as question-bank metadata). `extensions` is organized as `<key>: { version, data }`; each extension manages its own version. The upstream exports an empty object `{}` by default; on import, unregistered keys are safely skipped with a warning, and extensions newer than the running program are skipped as well. Fork projects can register extensions in the `BACKUP_EXTENSIONS` array in `src/lib/backup-extensions.ts`.
 
@@ -43,6 +43,8 @@ Version 10 adds a `score` field to `examPapers.questions` (per-question score, u
 
 Version 11 adds a `groupByType` field to `examPapers` (whether questions are grouped into sections by question type) and a `questionType` field to `examPapers.questions` (the source question type snapshotted when the exam question was created). Older files without these fields import as false / null.
 
+Version 12 adds `dictationSubmissions`: whole-session handwriting dictation batches and their items, including timestamped stroke traces, per-character still images, writing-process GIFs, manual review decisions and results left behind by the old automatic grading. Import restores them idempotently by the original submission ID, so importing the same file twice creates nothing new. Batches that were fully reviewed manually keep their completed state; every other batch (including legacy "grading" or "failed" ones) is restored as "awaiting manual review" so the handwriting can still be judged character by character in Today's Submissions instead of getting stuck. Older backups without this field import as before. See [Practice and Exams](Practice-and-Exams-en) for the workflow.
+
 Import merges existing notebooks and tags and handles duplicates by question similarity. A duplicate may add another wrong attempt under the existing question, so importing the same file repeatedly can change the practice history.
 
 Keep the original backup before importing, and afterwards check the new questions, tags, duplicate count and answer history. To restore to an exact point in time, use a file backup.
@@ -50,6 +52,10 @@ Keep the original backup before importing, and afterwards check the new question
 Restoring a backup keeps each question's original grade and does not apply the current entry rule. Old backups without a grade rule leave your current account settings unchanged.
 
 Each mistake's and each exam question's figure display scale and alignment (left / center / right) are exported and restored for page display and printouts. Older backups with no scale or alignment, or an invalid value, use the default 100% and center.
+
+### Backup size and the import limit
+
+A full backup embeds question images, SVG animations, synthesized cloud voice clips, images in unprocessed tasks and, from version 12, one writing-process GIF per character — all as base64 data. `/api/import` enforces a 50MB request body limit and returns `Request body too large (max 50MB)` before writing anything. Handwriting submissions accumulate and can grow the file noticeably; prune old submissions periodically or rely on the full-site file backup below, which is also the right tool for restoring to an exact point in time.
 
 ## Docker full-site backup
 

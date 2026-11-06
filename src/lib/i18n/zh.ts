@@ -983,7 +983,7 @@ export const zh = {
             importFailed: "导入失败",
             importConfirm: "确定要导入数据吗？导入操作将添加新数据到您的账户中，不会删除现有数据。",
             importResult: "导入结果",
-            importResultDesc: "已导入 {subjects} 个笔记本、{tags} 个标签、{items} 道错题、{schedules} 条复习计划、{records} 条练习记录、{papers} 份试卷、{voices} 段云端语音。另有 {duplicates} 道重复题目未重复导入，已记录本次相同题目的做错信息。",
+            importResultDesc: "已导入 {subjects} 个笔记本、{tags} 个标签、{items} 道错题、{schedules} 条复习计划、{records} 条练习记录、{papers} 份试卷、{voices} 段云端语音、{dictations} 份手写听写提交。另有 {duplicates} 道重复题目未重复导入，已记录本次相同题目的做错信息。",
             exportAllData: "导出全部",
             exportAllConfirm: "导出所有用户的数据？这可能需要一些时间。",
             importAllData: "导入全部",

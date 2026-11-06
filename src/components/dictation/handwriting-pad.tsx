@@ -3,107 +3,109 @@
 import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
 import { Eraser, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { UserStroke } from "@/lib/dictation/stroke-match";
+import { buildPadImage, buildStrokeAnimation, renderPadCanvas } from "@/lib/dictation/handwriting-animation";
+import type { PadSnapshot, TimedPad, TimedStrokePoint } from "@/lib/dictation/handwriting-types";
+
+function clonePad(pad: TimedPad): TimedPad {
+    return pad.map((stroke) => stroke.map((point) => ({ ...point })));
+}
 
 export interface HandwritingPadHandle {
     clear: () => void;
     undo: () => void;
-    /** 导出白底田字格 + 笔迹的 PNG dataURL（供 AI 识别） */
+    /** 导出白底黑字成品图（供视觉模型判定） */
     toDataUrl: () => string;
+    /** 导出本格完整快照：带时间轴的轨迹 + 成品图 + 书写过程动图 */
+    snapshot: () => PadSnapshot | null;
 }
 
 interface HandwritingPadProps {
     disabled?: boolean;
-    onStrokesChange?: (strokes: UserStroke[]) => void;
+    /** 切题回来时恢复之前写过的笔迹（配合 key 强制重挂载） */
+    initialStrokes?: TimedPad;
+    onStrokesChange?: (strokes: TimedPad) => void;
 }
 
-/** 逻辑画布边长（导出给 AI 识别用的分辨率） */
-const EXPORT_SIZE = 512;
-
-/**
- * 田字格手写板：鼠标 / 触屏 / 手写笔通用，记录每笔轨迹点（0~1 归一化坐标，y 向下）。
- * 判定在服务端完成，这里只负责采集与导出图片。
- */
+/** 田字格手写板：鼠标 / 触屏 / 手写笔通用。
+ * 记录每笔轨迹点与相对时间（0~1 归一化坐标，y 向下），整轮交卷时统一导出。 */
 export const HandwritingPad = forwardRef<HandwritingPadHandle, HandwritingPadProps>(
-    function HandwritingPad({ disabled = false, onStrokesChange }, ref) {
+    function HandwritingPad({ disabled = false, initialStrokes, onStrokesChange }, ref) {
         const canvasRef = useRef<HTMLCanvasElement>(null);
-        const strokesRef = useRef<UserStroke[]>([]);
+        const strokesRef = useRef<TimedPad>(clonePad(initialStrokes ?? []));
         const drawingRef = useRef(false);
-        const [hasInk, setHasInk] = useState(false);
-        const [strokeCount, setStrokeCount] = useState(0);
+        const startTimeRef = useRef<number | null>(null);
+        const [hasInk, setHasInk] = useState((initialStrokes?.length ?? 0) > 0);
+        const [strokeCount, setStrokeCount] = useState(initialStrokes?.length ?? 0);
 
         const emitChange = useCallback(() => {
             setStrokeCount(strokesRef.current.length);
             setHasInk(strokesRef.current.length > 0);
-            onStrokesChange?.(strokesRef.current.map((s) => [...s]));
+            onStrokesChange?.(strokesRef.current.map((s) => s.map((p) => ({ ...p }))));
         }, [onStrokesChange]);
-
-        /** 画田字格：inkColor 外框颜色，gridAlpha 十字虚线透明度 */
-        const drawGrid = useCallback(
-            (ctx: CanvasRenderingContext2D, size: number, inkColor: string, gridAlpha: number) => {
-                ctx.clearRect(0, 0, size, size);
-                // 外框
-                ctx.strokeStyle = inkColor;
-                ctx.lineWidth = Math.max(2, size / 160);
-                ctx.strokeRect(0, 0, size, size);
-                // 十字虚线
-                ctx.save();
-                ctx.globalAlpha = gridAlpha;
-                ctx.strokeStyle = inkColor;
-                ctx.lineWidth = 1;
-                ctx.setLineDash([size / 28, size / 28]);
-                ctx.beginPath();
-                ctx.moveTo(size / 2, 0);
-                ctx.lineTo(size / 2, size);
-                ctx.moveTo(0, size / 2);
-                ctx.lineTo(size, size / 2);
-                ctx.stroke();
-                ctx.restore();
-            },
-            []
-        );
-
-        const drawStrokes = useCallback((ctx: CanvasRenderingContext2D, size: number, inkColor: string) => {
-            ctx.strokeStyle = inkColor;
-            ctx.fillStyle = inkColor;
-            ctx.lineWidth = size / 22;
-            ctx.lineCap = "round";
-            ctx.lineJoin = "round";
-            for (const stroke of strokesRef.current) {
-                ctx.beginPath();
-                stroke.forEach((p, i) => {
-                    const x = p.x * size;
-                    const y = p.y * size;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                });
-                if (stroke.length === 1) {
-                    const p = stroke[0];
-                    ctx.arc(p.x * size, p.y * size, ctx.lineWidth / 2, 0, Math.PI * 2);
-                    ctx.fill();
-                } else {
-                    ctx.stroke();
-                }
-            }
-        }, []);
 
         const redraw = useCallback(() => {
             const canvas = canvasRef.current;
             if (!canvas) return;
             const ctx = canvas.getContext("2d");
             if (!ctx) return;
-            // 笔迹用前景色（暗色主题下是浅色），网格用同色低透明度
+            // 界面沿用主题前景色；导出图固定白底黑字
             const inkColor = getComputedStyle(canvas).color || "#333333";
-            drawGrid(ctx, canvas.width, inkColor, 0.3);
-            drawStrokes(ctx, canvas.width, inkColor);
-        }, [drawGrid, drawStrokes]);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            ctx.strokeStyle = inkColor;
+            ctx.lineWidth = Math.max(2, canvas.width / 160);
+            ctx.strokeRect(0, 0, canvas.width, canvas.height);
+            ctx.globalAlpha = 0.3;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([canvas.width / 28, canvas.width / 28]);
+            ctx.beginPath();
+            ctx.moveTo(canvas.width / 2, 0);
+            ctx.lineTo(canvas.width / 2, canvas.height);
+            ctx.moveTo(0, canvas.height / 2);
+            ctx.lineTo(canvas.width, canvas.height / 2);
+            ctx.stroke();
+            ctx.restore();
+            ctx.save();
+            ctx.strokeStyle = inkColor;
+            ctx.fillStyle = inkColor;
+            ctx.lineWidth = canvas.width / 22;
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            for (const stroke of strokesRef.current) {
+                ctx.beginPath();
+                stroke.forEach((p, i) => {
+                    const x = p.x * canvas.width;
+                    const y = p.y * canvas.height;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                if (stroke.length === 1) {
+                    const p = stroke[0];
+                    ctx.arc(p.x * canvas.width, p.y * canvas.height, ctx.lineWidth / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                } else {
+                    ctx.stroke();
+                }
+            }
+            ctx.restore();
+        }, []);
 
-        const pointFromEvent = useCallback((e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } => {
+        const pointFromEvent = useCallback((e: React.PointerEvent<HTMLCanvasElement>): TimedStrokePoint => {
             const canvas = canvasRef.current!;
             const rect = canvas.getBoundingClientRect();
+            const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+            if (startTimeRef.current === null) {
+                // 恢复的笔迹已有时间戳，新笔画要从最后一笔之后继续，动图才不会倒放
+                const lastTime = strokesRef.current.reduce(
+                    (max, stroke) => stroke.reduce((m, p) => Math.max(m, p.t), max),
+                    0
+                );
+                startTimeRef.current = now - lastTime;
+            }
             return {
                 x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
                 y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+                t: Math.max(0, Math.round(now - startTimeRef.current)),
             };
         }, []);
 
@@ -112,8 +114,7 @@ export const HandwritingPad = forwardRef<HandwritingPadHandle, HandwritingPadPro
             e.preventDefault();
             canvasRef.current?.setPointerCapture(e.pointerId);
             drawingRef.current = true;
-            const p = pointFromEvent(e);
-            strokesRef.current.push([p]);
+            strokesRef.current.push([pointFromEvent(e)]);
             redraw();
         };
 
@@ -138,12 +139,14 @@ export const HandwritingPad = forwardRef<HandwritingPadHandle, HandwritingPadPro
 
         const undoOne = useCallback(() => {
             strokesRef.current.pop();
+            if (strokesRef.current.length === 0) startTimeRef.current = null;
             redraw();
             emitChange();
         }, [redraw, emitChange]);
 
         const clearAll = useCallback(() => {
             strokesRef.current = [];
+            startTimeRef.current = null;
             redraw();
             emitChange();
         }, [redraw, emitChange]);
@@ -153,21 +156,19 @@ export const HandwritingPad = forwardRef<HandwritingPadHandle, HandwritingPadPro
             () => ({
                 clear: clearAll,
                 undo: undoOne,
-                toDataUrl: () => {
-                    const off = document.createElement("canvas");
-                    off.width = EXPORT_SIZE;
-                    off.height = EXPORT_SIZE;
-                    const ctx = off.getContext("2d");
-                    if (!ctx) return "";
-                    // 白纸黑字，与界面主题无关，便于 AI 识别
-                    ctx.fillStyle = "#ffffff";
-                    ctx.fillRect(0, 0, EXPORT_SIZE, EXPORT_SIZE);
-                    drawGrid(ctx, EXPORT_SIZE, "#999999", 0.5);
-                    drawStrokes(ctx, EXPORT_SIZE, "#111111");
-                    return off.toDataURL("image/png");
+                toDataUrl: () => buildPadImage(strokesRef.current),
+                snapshot: () => {
+                    const strokes = strokesRef.current;
+                    if (strokes.length === 0) return null;
+                    const copy: TimedPad = strokes.map((s) => s.map((p) => ({ ...p })));
+                    return {
+                        strokes: copy,
+                        image: buildPadImage(copy),
+                        animation: buildStrokeAnimation(copy),
+                    };
                 },
             }),
-            [clearAll, undoOne, drawGrid, drawStrokes]
+            [clearAll, undoOne]
         );
 
         return (
@@ -208,10 +209,15 @@ export const HandwritingPad = forwardRef<HandwritingPadHandle, HandwritingPadPro
                         disabled={disabled || !hasInk}
                         onClick={clearAll}
                     >
-                        <Eraser className="mr-1 h-4 w-4" /> 重写
+                        <Eraser className="mr-2 h-4 w-4" /> 重写
                     </Button>
                 </div>
             </div>
         );
     }
 );
+
+/** 供详情回放使用：把轨迹画到指定画布 */
+export function drawSnapshot(ctx: CanvasRenderingContext2D, strokes: TimedPad, size: number, upToTime?: number) {
+    renderPadCanvas(ctx, strokes, size, { grid: true, upToTime });
+}

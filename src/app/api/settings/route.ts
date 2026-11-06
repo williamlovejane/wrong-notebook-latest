@@ -57,6 +57,10 @@ async function handlePost(req: Request) {
         if (body.aiConcurrencyLimit !== undefined && !isValidConcurrencyLimit(body.aiConcurrencyLimit)) {
             return badRequest('INVALID_AI_CONCURRENCY_LIMIT');
         }
+        // 兼容旧配置文件里残留的 visionProvider；手写听写已全部人工判卷，该字段不再被读取
+        if (body.visionProvider !== undefined && (typeof body.visionProvider !== 'string' || body.visionProvider.length > 60)) {
+            return badRequest('INVALID_VISION_PROVIDER');
+        }
         if (body.minimaxCode !== undefined) {
             const parsed = minimaxCodeSchema.safeParse(body.minimaxCode);
             if (!parsed.success) return badRequest('INVALID_MINIMAX_CODE_CONFIG');

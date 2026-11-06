@@ -984,7 +984,7 @@ export const en = {
             importFailed: "Import failed",
             importConfirm: "Are you sure you want to import? This will add new data to your account without deleting existing data.",
             importResult: "Import Result",
-            importResultDesc: "Imported {subjects} notebooks, {tags} tags, {items} error items, {schedules} review schedules, {records} practice records, {papers} exam papers and {voices} cloud voice clips. {duplicates} duplicate questions were skipped and recorded as incorrect attempts.",
+            importResultDesc: "Imported {subjects} notebooks, {tags} tags, {items} error items, {schedules} review schedules, {records} practice records, {papers} exam papers, {voices} cloud voice clips and {dictations} handwriting dictation submissions. {duplicates} duplicate questions were skipped and recorded as incorrect attempts.",
             exportAllData: "Export All",
             exportAllConfirm: "Export all users' data? This may take a while.",
             importAllData: "Import All",

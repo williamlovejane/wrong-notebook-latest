@@ -45,6 +45,7 @@ model User {
   paperGroups PaperGroup[]
   dictationEntries DictationEntry[]
   reviewCards      ReviewCard[]
+  dictationSubmissions DictationSubmission[]
   importTasks ImportTask[]
   importBatches ImportBatch[]
 }
@@ -385,6 +386,62 @@ model ReviewLog {
 
   @@index([cardId, reviewedAt])
   @@index([batchId])
+}
+
+// 一次听写交卷：整轮生字写完后统一提交，判分在后台异步进行
+model DictationSubmission {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status    String   @default("pending") // pending | grading | completed | failed
+  mode      String   @default("handwriting")
+  totalCount   Int      // 本次交卷实际作答的题数（未写的题不计入）
+  skippedCount Int      @default(0) // 未作答、未更新复习计划的题数
+  gradedCount  Int      @default(0)
+  correctCount Int      @default(0)
+  judgedBy     String?  // ai | local | mixed
+  error        String?
+  gridImage    String?  // 前端拼接的编号网格图，后台一次请求判完整批
+  gradingNow   DateTime? // 调试模式下的模拟判分时刻；后台任务脱离请求上下文后仍按它排程
+  heartbeatAt  DateTime?
+  createdAt    DateTime @default(now())
+  finishedAt   DateTime?
+
+  items     DictationSubmissionItem[]
+
+  @@index([userId, createdAt])
+  @@index([status, heartbeatAt])
+}
+
+// 交卷中的单题：保存书写过程与判定结果，供回看与人工复核
+model DictationSubmissionItem {
+  id           String @id @default(cuid())
+  submissionId String
+  submission   DictationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  position     Int    @default(0) // 本轮题目顺序；编号网格图的格号按此顺序展开，不可依赖 cuid 排序
+  logId        String // 出题时创建的 ReviewLog（quizToken）
+  cardId       String
+  expected     String // 该题应写的字串
+  promptWord   String?
+  pinyin       String?
+
+  pads       String  // JSON：每个字的笔画轨迹（含时间戳），用于回放与复核
+  images     String  // JSON：每个字成品静态图 dataURL，供批量 AI 判定
+  animations String? // JSON：每个字书写过程 GIF dataURL
+
+  correct       Boolean?
+  recognized    String?
+  confidence    String?  // high | medium | low
+  judgedBy      String?  // ai | local | manual
+  strokeCorrect Boolean?
+  detail        String?  // JSON：逐字判定明细
+  error         String?
+  gradedAt      DateTime?
+  manualCorrect Boolean? // 人工复核后的结果
+
+  @@unique([submissionId, logId])
+  @@index([submissionId])
 }
 
 // 大模型调用日志：每次 HTTP 请求一条，用于用量查询与成本报表

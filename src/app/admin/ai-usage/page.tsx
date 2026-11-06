@@ -11,7 +11,7 @@ import { apiClient } from "@/lib/api-client";
 const REASON_LABELS: Record<string, string> = {
     recognizeGrade: "识别年级学期",
     analyzeImage: "识别错题",
-    analyzeImageWithPrompt: "图片判分（听写判卷等）",
+    analyzeImageWithPrompt: "图片理解（试卷拍照判分等）",
     generateSimilarQuestion: "出相似题",
     generateFigureSvg: "绘制题目配图",
     reanswerQuestion: "重答分析",

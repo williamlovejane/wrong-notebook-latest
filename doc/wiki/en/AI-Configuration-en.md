@@ -99,13 +99,19 @@ If a configuration has already been saved in the web UI, changing only the envir
 
 | Capability | Features |
 | --- | --- |
-| Image input | Photo recognition, redrawing figures from the original image, re-solving when an image is available |
+| Image input | Photo recognition, redrawing figures from the original image, re-solving when an image is available, AI grading of exam paper photos |
 | Math reasoning and clean LaTeX | Answers, analysis, mistake causes and difficulty rating |
 | Returning content in the specified tags or JSON | Parsing of all AI results |
 | Emitting SVG code | Static figures and SVG animated explanations |
 | Long enough output | Recognition results with figures and step-by-step animations |
 
 SVG figures and animations are generated as code by the language model; no image-generation API is called. Animations often need long output. Every call requests the model's maximum output directly (the official limit for known models, 262144 (256K) for unknown models; if the API rejects it, the limit is read from the error, retried and remembered); the model itself must also support that length. Relay gateways that pre-charge by `max_tokens` (such as NewAPI) need enough balance to cover the pre-charge.
+
+### Image input and handwriting dictation
+
+**Whole-session handwriting dictation no longer uses automatic grading; every result is reviewed manually.** Submission only stores the stroke trace, a still image and a GIF of the writing process. No vision model is called, no AI quota is consumed, and no handwriting image is sent to a third party. Correct/wrong is decided per character in **Today's Submissions**, and only then is the review schedule updated. Lightweight vision models proved too unreliable at recognising hastily written single characters, even after the prompt was narrowed to "recognise the character, do not judge it". The "Handwriting grading vision model" setting has therefore been removed; a leftover `visionProvider` field in an older config file is ignored and does not affect other features. See [Practice and Exams](Practice-and-Exams-en) for the workflow.
+
+Other image features (photo recognition, redrawing figures from the original image, re-solving when an image is available, AI grading of exam paper photos) still use the main model's image input directly. Checked against DeepSeek's official Models & Pricing / Vision docs in 2026-11: `deepseek-flash` (DeepSeek-V4.1-Flash-1017) has Vision ✓ and accepts base64 `image_url` input in PNG/JPEG/GIF/WebP; the old names `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` are retired and requests are served by Flash; `deepseek-v4-pro` on the same platform is marked Not supported and cannot be used for image features.
 
 ## Prompts and generation rules
 

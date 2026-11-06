@@ -20,7 +20,8 @@ interface DataBackupSettingsProps {
 }
 
 function formatImportResult(stats: ImportStats, t: Translations): string {
-    return (t.settings?.importResultDesc || "Imported {subjects} notebooks, {tags} tags, {items} error items, {schedules} review schedules, {records} practice records, {papers} exam papers and {voices} cloud voice clips.")
+    return (t.settings?.importResultDesc || "Imported {subjects} notebooks, {tags} tags, {items} error items, {schedules} review schedules, {records} practice records, {papers} exam papers, {voices} cloud voice clips and {dictations} handwriting submissions.")
+        .replace('{dictations}', String(stats.dictationSubmissionsCreated ?? 0))
         .replace('{subjects}', String(stats.subjectsCreated))
         .replace('{tags}', String(stats.tagsCreated))
         .replace('{items}', String(stats.errorItemsCreated))

@@ -16,6 +16,8 @@ export type VendorConfigs = { [K in VendorProviderId]?: VendorConfig };
 
 export interface AppConfig extends VendorConfigs {
     aiProvider: 'gemini' | 'openai' | 'azure' | 'anthropic' | 'minimax-code' | VendorProviderId;
+    /** @deprecated 手写听写已改为全部人工判卷，此字段仅为兼容旧配置文件保留，不再被读取 */
+    visionProvider?: string;
     allowRegistration?: boolean;
     /** 普通用户每天可发起的 AI 调用次数，0 表示不限制；管理员不受限制 */
     aiDailyLimit?: number;
